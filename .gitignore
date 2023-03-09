@@ -1,0 +1,15 @@
+# Rust
+target/
+
+# Cargo
+Cargo.lock
+
+# IntelliJ IDEA
+.idea/
+**.iml
+
+# Fleet
+.fleet/
+
+# Compiler test
+!example/**/target/
