@@ -1,0 +1,53 @@
+module df {
+    type number = float if value >= -1.0e7 && value <= 1.0e7;
+
+    interface density_function(id: string) = { "type": id, this };
+
+    class constant(value: number): density_function("minecraft:constant") = value;
+    class add(argument1: density_function, argument2: density_function): density_function("minecraft:add");
+    class mul(argument1: density_function, argument2: density_function): density_function("minecraft:mul");
+    // ...
+
+    // Operators for addition and multiplication
+    template +(left: density_function, right: density_function): add { add(left, right) }
+    template *(left: density_function, right: density_function): mul { mul(left, right) }
+
+    // Type conversions (for example, to be able to use a literal float value where a density function is expected)
+    template type(value: number): constant {
+        constant(value)
+    }
+
+    template type(value: object): density_function {
+        impl::from_object(object)
+    }
+
+    optimize add(argument1: constant, argument2: constant): constant {
+        argument1.value + argument2.value
+    }
+
+    module impl {
+        // Not sure about this
+        class from_object(value: object): density_function(value["type"]) = value;
+    }
+}
+
+module overworld {
+    import df::*;
+
+    // definitions for offset, factor, jaggedness, ...
+
+    depth = y_clamped_gradient(1.5, -1.5, -64, 320) + offset;
+
+    base_3d_noise = {
+        "type": "minecraft:old_blended_noise",
+        "smear_scale_multiplier": 8.0,
+        "xz_factor": 80.0,
+        "xz_scale": 0.25,
+        "y_factor": 160.0,
+        "y_scale": 0.125
+    };
+
+    export sloped_cheese = 4.0 *
+        quarter_negative((depth + jaggedness * half_negative(noise("minecraft:jagged", 1500.0, 0.0))) * factor)
+        + base_3d_noise;
+}
