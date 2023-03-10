@@ -1,5 +1,6 @@
 use std::fmt::{Debug, Display, Formatter};
 use std::str::Chars;
+use crate::compiler::error::{ErrorReporter, Message, MessageContext, MessageKind, NoteKind, Span};
 use crate::util;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,6 +67,9 @@ pub enum TokenType {
 
     // EOF
     Eof,
+
+    // Error token is emitted when a lexer error has occurred
+    Error,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -114,54 +118,62 @@ impl<'source> Debug for Token<'source> {
     }
 }
 
+type MessageMarker = ();
+
 #[derive(Debug, Clone)]
 pub enum LexerError {
     UnexpectedEof,
 
-    UnexpectedCharacter(TokenPos, char),
+    UnexpectedCharacter(char),
     ExpectedCharacter {
-        pos: TokenPos,
         expected: char,
         got: char
     },
-    ExpectedString {
-        pos: TokenPos,
-        expected: String,
-    },
-    UnterminatedString {
-        pos: TokenPos,
-    },
+    UnterminatedString,
 
-    OtherError(TokenPos, String)
+    OtherError(String),
 }
 
 impl LexerError {
-    pub fn get_pos(&self) -> Option<&TokenPos> {
+    pub fn char_byte_offset(&self) -> u32 {
         match self {
-            LexerError::UnexpectedCharacter(pos, _) => Some(pos),
-            LexerError::ExpectedCharacter { pos, .. } => Some(pos),
-            LexerError::ExpectedString { pos, .. } => Some(pos),
-            LexerError::UnterminatedString { pos, .. } => Some(pos),
-            LexerError::OtherError(pos, _) => Some(pos),
-            _ => None,
+            LexerError::UnexpectedEof => 0,
+            LexerError::UnexpectedCharacter(c) => c.len_utf8() as u32,
+            LexerError::ExpectedCharacter { got, .. } => got.len_utf8() as u32,
+            _ => 0,
         }
     }
 }
 
-impl Display for LexerError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+impl Message<MessageMarker> for LexerError {
+    fn name(&self) -> &'static str {
         match self {
-            LexerError::UnexpectedEof => write!(f, "Unexpected EOF"),
-            LexerError::UnexpectedCharacter(pos, c) => write!(f, "{} Unexpected character '{}'", pos, c),
-            LexerError::ExpectedCharacter { pos, expected, got } => write!(f, "{} Unexpected character; expected '{}', got '{}'", pos, expected, got),
-            LexerError::ExpectedString { pos, expected } => write!(f, "{} Unexpected character; expected \"{}\"", pos, expected),
-            LexerError::UnterminatedString { pos } => write!(f, "{} Unterminated string", pos),
-            LexerError::OtherError(pos, message) => write!(f, "{} {}", pos, message),
+            LexerError::UnexpectedEof => "lexer/unexpected_eof",
+            LexerError::UnexpectedCharacter(_) => "lexer/unexpected_character",
+            LexerError::ExpectedCharacter { .. } => "lexer/expected_character",
+            LexerError::UnterminatedString => "lexer/unterminated_string",
+            LexerError::OtherError(_) => "lexer/unknown",
         }
     }
-}
 
-type LexerResult<T> = Result<T, LexerError>;
+    fn kind(&self) -> MessageKind {
+        MessageKind::Error
+    }
+
+    fn description(&mut self, _context: &MessageContext<'_, ()>) -> String {
+        match self {
+            LexerError::UnexpectedEof => String::from("Unexpected EOF"),
+            LexerError::UnexpectedCharacter(c) => format!("Unexpected character '{}'", c),
+            LexerError::ExpectedCharacter { expected, got } => format!("Expected character '{}', got '{}'", expected, got),
+            LexerError::UnterminatedString => String::from("Unterminated string"),
+            LexerError::OtherError(msg) => msg.clone(),
+        }
+    }
+
+    fn notes(&mut self, _context: &MessageContext<'_, ()>) -> Vec<(NoteKind, String)> {
+        Vec::new()
+    }
+}
 
 pub struct Lexer<'source> {
     input: &'source str,
@@ -172,6 +184,19 @@ pub struct Lexer<'source> {
 
     start_pos: TokenPos,
     current_pos: TokenPos,
+}
+
+macro_rules! try_or_report {
+    ($self:expr, $reporter:expr, $block:expr) => {
+        match $block {
+            Ok(result) => result,
+            Err(err) => {
+                let byte_offset = err.char_byte_offset();
+                $self.report_char($reporter, err, byte_offset);
+                return $self.make_token(TokenType::Error);
+            },
+        }
+    }
 }
 
 impl<'source> Lexer<'source> {
@@ -188,90 +213,93 @@ impl<'source> Lexer<'source> {
         }
     }
 
-    pub fn scan_token(&mut self) -> LexerResult<Token> {
+    pub fn scan_token(&mut self, reporter: &mut ErrorReporter<MessageMarker>) -> Token {
         loop {
             self.skip_whitespace();
             self.start_pos = self.current_pos.clone();
 
             if self.is_eof() {
-                return Ok(self.make_token(TokenType::Eof));
+                return self.make_token(TokenType::Eof);
             }
 
-            let c = self.consume()?;
+            let c = try_or_report!(self, reporter, self.consume());
 
             return match c {
-                '(' => Ok(self.make_token(TokenType::ParenthesisLeft)),
-                ')' => Ok(self.make_token(TokenType::ParenthesisRight)),
-                '{' => Ok(self.make_token(TokenType::BracketLeft)),
-                '}' => Ok(self.make_token(TokenType::BracketRight)),
-                '[' => Ok(self.make_token(TokenType::SquareBracketLeft)),
-                ']' => Ok(self.make_token(TokenType::SquareBracketRight)),
-                '.' => Ok(self.make_token(TokenType::Dot)),
-                ',' => Ok(self.make_token(TokenType::Comma)),
-                ';' => Ok(self.make_token(TokenType::Semicolon)),
-                ':' => Ok(if self.expect(':')? { self.make_token(TokenType::ColonColon) } else {
+                '(' => self.make_token(TokenType::ParenthesisLeft),
+                ')' => self.make_token(TokenType::ParenthesisRight),
+                '{' => self.make_token(TokenType::BracketLeft),
+                '}' => self.make_token(TokenType::BracketRight),
+                '[' => self.make_token(TokenType::SquareBracketLeft),
+                ']' => self.make_token(TokenType::SquareBracketRight),
+                '.' => self.make_token(TokenType::Dot),
+                ',' => self.make_token(TokenType::Comma),
+                ';' => self.make_token(TokenType::Semicolon),
+                ':' => if self.expect(':') { self.make_token(TokenType::ColonColon) } else {
                     self.make_token(TokenType::Colon)
-                }),
+                },
 
-                '=' => Ok(if self.expect('=')? { self.make_token(TokenType::Equal) } else {
+                '=' => if self.expect('=') { self.make_token(TokenType::Equal) } else {
                     self.make_token(TokenType::Assign)
-                }),
-                '!' => Ok(if self.expect('=')? { self.make_token(TokenType::NotEqual) } else {
+                },
+                '!' => if self.expect('=') { self.make_token(TokenType::NotEqual) } else {
                     self.make_token(TokenType::Not)
-                }),
-                '>' => Ok(if self.expect('=')? { self.make_token(TokenType::GreaterEqual) } else {
+                },
+                '>' => if self.expect('=') { self.make_token(TokenType::GreaterEqual) } else {
                     self.make_token(TokenType::Greater)
-                }),
-                '<' => Ok(if self.expect('=')? { self.make_token(TokenType::LessEqual) } else {
+                },
+                '<' => if self.expect('=') { self.make_token(TokenType::LessEqual) } else {
                     self.make_token(TokenType::Less)
-                }),
-                '&' => Ok(if self.expect('&')? { self.make_token(TokenType::ShortcircuitAnd) } else {
+                },
+                '&' => if self.expect('&') { self.make_token(TokenType::ShortcircuitAnd) } else {
                     self.make_token(TokenType::And)
-                }),
-                '|' => Ok(if self.expect('|')? { self.make_token(TokenType::ShortcircuitOr) } else {
+                },
+                '|' => if self.expect('|') { self.make_token(TokenType::ShortcircuitOr) } else {
                     self.make_token(TokenType::Or)
-                }),
+                },
 
                 // Only `+` and `*` are used, maybe `-`
-                '+' => Ok(if self.expect('=')? { self.make_token(TokenType::PlusAssign) } else {
+                '+' => if self.expect('=') { self.make_token(TokenType::PlusAssign) } else {
                     self.make_token(TokenType::Plus)
-                }),
+                },
                 '-' => {
-                    let next = self.peek()?;
+                    let next = try_or_report!(self, reporter, self.peek());
 
                     if ('0'..='9').contains(&next) {
-                        self.scan_number()
+                        self.scan_number(reporter)
                     } else {
-                        Ok(if self.expect('=')? { self.make_token(TokenType::MinusAssign) } else {
+                        if self.expect('=') { self.make_token(TokenType::MinusAssign) } else {
                             self.make_token(TokenType::Minus)
-                        })
+                        }
                     }
                 },
-                '*' => Ok(if self.expect('=')? { self.make_token(TokenType::MultiplyAssign) } else {
+                '*' => if self.expect('=') { self.make_token(TokenType::MultiplyAssign) } else {
                     self.make_token(TokenType::Multiply)
-                }),
-                '/' => Ok(if self.expect('=')? { self.make_token(TokenType::DivideAssign) } else if self.expect('/')? {
+                },
+                '/' => if self.expect('=') { self.make_token(TokenType::DivideAssign) } else if self.expect('/') {
                     self.skip_line();
                     continue;
                 } // Skip line comments
-                else if self.expect('*')? {
+                else if self.expect('*') {
                     /* Skip block comments */
                     self.skip_block_comment();
                     continue;
                 } else {
                     self.make_token(TokenType::Divide)
-                }),
+                },
 
-                '"' => self.scan_string(),
-                '0'..='9' => self.scan_number(),
-                c if util::is_alphabetic(c) => self.scan_identifier(),
+                '"' => self.scan_string(reporter),
+                '0'..='9' => self.scan_number(reporter),
+                c if util::is_alphabetic(c) => self.scan_identifier(reporter),
 
-                _ => Err(LexerError::UnexpectedCharacter(self.current_pos.clone(), c)),
+                _ => {
+                    self.report_char(reporter, LexerError::UnexpectedCharacter(c), c.len_utf8() as u32);
+                    self.make_token(TokenType::Error)
+                },
             };
         }
     }
 
-    fn scan_string(&mut self) -> LexerResult<Token> {
+    fn scan_string(&mut self, reporter: &mut ErrorReporter<MessageMarker>) -> Token {
         while let Ok(c) = self.peek() {
             if c == '"' {
                 break;
@@ -281,20 +309,21 @@ impl<'source> Lexer<'source> {
         }
 
         if self.is_eof() {
-            Err(LexerError::UnterminatedString { pos: self.start_pos.clone() })
+            reporter.report(Span::from(self.start_pos.clone(), self.current_pos.clone()), LexerError::UnterminatedString);
+            self.make_token(TokenType::Error)
         } else {
             let _ = self.consume(); // the trailing '"'
 
             // Don't add leading and trailing '"' characters to token
-            Ok(Token {
+            Token {
                 token_type: TokenType::LiteralString,
                 source: &self.input[(self.start_pos.index as usize + 1)..(self.current_pos.index as usize - 1)],
                 start: self.start_pos.clone(), end: self.current_pos.clone(),
-            })
+            }
         }
     }
 
-    fn scan_number(&mut self) -> LexerResult<Token> {
+    fn scan_number(&mut self, _reporter: &mut ErrorReporter<MessageMarker>) -> Token {
         while let Ok('0'..='9') = self.peek() {
             let _ = self.consume();
         }
@@ -313,7 +342,7 @@ impl<'source> Lexer<'source> {
                 if let Ok('e' | 'E') = self.peek() {
                     let _ = self.consume();
 
-                    self.expect_any(&['+', '-'])?;
+                    self.expect_any(&['+', '-']);
 
                     while let Ok('0'..='9') = self.peek() {
                         let _ = self.consume();
@@ -322,10 +351,10 @@ impl<'source> Lexer<'source> {
             }
         }
 
-        Ok(self.make_token(if floating_point { TokenType::LiteralFloat } else { TokenType::LiteralInt }))
+        self.make_token(if floating_point { TokenType::LiteralFloat } else { TokenType::LiteralInt })
     }
 
-    fn scan_identifier(&mut self) -> LexerResult<Token> {
+    fn scan_identifier(&mut self, _reporter: &mut ErrorReporter<MessageMarker>) -> Token {
         while let Ok(c) = self.peek() {
             if !util::is_alphanumeric(c) {
                 break;
@@ -414,7 +443,7 @@ impl<'source> Lexer<'source> {
             _ => TokenType::Identifier,
         };
 
-        Ok(Token { source: name, token_type, start: self.start_pos.clone(), end: self.current_pos.clone() })
+        Token { source: name, token_type, start: self.start_pos.clone(), end: self.current_pos.clone() }
     }
 
     fn check_keyword(name: &str, start: usize, keyword: &'static str, token_type: TokenType) -> TokenType {
@@ -434,14 +463,14 @@ impl<'source> Lexer<'source> {
         }
     }
 
-    fn consume(&mut self) -> LexerResult<char> {
+    fn consume(&mut self) -> Result<char, LexerError> {
         (if let Some(c) = self.peek_1.take() {
             self.peek_1 = self.peek_2.take();
             Ok(c)
         } else {
             self.chars.next().ok_or(LexerError::UnexpectedEof)
         }).map(|c| {
-            self.current_pos.index += 1;
+            self.current_pos.index += c.len_utf8() as u32;
 
             if c == '\n' {
                 self.current_pos.line += 1;
@@ -454,7 +483,7 @@ impl<'source> Lexer<'source> {
         })
     }
 
-    fn peek(&mut self) -> LexerResult<char> {
+    fn peek(&mut self) -> Result<char, LexerError> {
         if let Some(c) = self.peek_1 {
             Ok(c)
         } else if let Some(c) = self.chars.next() {
@@ -465,7 +494,7 @@ impl<'source> Lexer<'source> {
         }
     }
 
-    fn peek_next(&mut self) -> LexerResult<char> {
+    fn peek_next(&mut self) -> Result<char, LexerError> {
         if let Some(c) = self.peek_2 {
             Ok(c)
         } else if self.peek_1.is_some() {
@@ -489,23 +518,31 @@ impl<'source> Lexer<'source> {
         }
     }
 
-    fn expect(&mut self, expected: char) -> LexerResult<bool> {
-        let actual = self.peek()?;
+    fn expect(&mut self, expected: char) -> bool {
+        let actual = match self.peek() {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
 
         if expected == actual {
-            self.consume().map(|_| true)
+            let _ = self.consume();
+            true
         } else {
-            Ok(false)
+            false
         }
     }
 
-    fn expect_any(&mut self, expected: &[char]) -> LexerResult<bool> {
-        let actual = self.peek()?;
+    fn expect_any(&mut self, expected: &[char]) -> bool {
+        let actual = match self.peek() {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
 
         if expected.contains(&actual) {
-            self.consume().map(|_| true)
+            let _ = self.consume();
+            true
         } else {
-            Ok(false)
+            false
         }
     }
 
@@ -551,5 +588,11 @@ impl<'source> Lexer<'source> {
 
     fn is_eof(&self) -> bool {
         self.current_pos.index as usize >= self.input.len()
+    }
+
+    fn report_char(&self, reporter: &mut ErrorReporter<MessageMarker>, error: LexerError, byte_offset: u32) {
+        reporter.report(Span::from(self.current_pos.clone(),
+            TokenPos::new(self.current_pos.line, self.current_pos.column + if byte_offset > 0 { 1 } else { 0 }, self.current_pos.index + byte_offset)),
+            error);
     }
 }

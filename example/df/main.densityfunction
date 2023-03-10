@@ -18,7 +18,7 @@ module df {
     }
 
     template type(value: object): density_function {
-        impl::from_object(object)
+        impl::from_object(value)
     }
 
     optimize add(argument1: constant, argument2: constant): constant {
