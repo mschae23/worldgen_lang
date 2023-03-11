@@ -1,6 +1,7 @@
 use std::fmt::{Debug, Display, Formatter};
 use std::str::Chars;
-use crate::compiler::error::{ErrorReporter, Message, MessageContext, MessageKind, NoteKind, Span};
+use crate::compiler::error::{ErrorReporter, Message, MessageContext, MessageKind, NoteKind};
+use crate::compiler::error::span::Span;
 use crate::util;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,7 +119,7 @@ impl<'source> Debug for Token<'source> {
     }
 }
 
-type MessageMarker = ();
+pub type MessageMarker = ();
 
 #[derive(Debug, Clone)]
 pub enum LexerError {
@@ -190,6 +191,9 @@ macro_rules! try_or_report {
     ($self:expr, $reporter:expr, $block:expr) => {
         match $block {
             Ok(result) => result,
+            Err(LexerError::UnexpectedEof) => {
+                return $self.make_token(TokenType::Eof);
+            },
             Err(err) => {
                 let byte_offset = err.char_byte_offset();
                 $self.report_char($reporter, err, byte_offset);
@@ -213,7 +217,7 @@ impl<'source> Lexer<'source> {
         }
     }
 
-    pub fn scan_token(&mut self, reporter: &mut ErrorReporter<MessageMarker>) -> Token {
+    pub fn scan_token(&mut self, reporter: &mut ErrorReporter<MessageMarker>) -> Token<'source> {
         loop {
             self.skip_whitespace();
             self.start_pos = self.current_pos.clone();
@@ -299,7 +303,7 @@ impl<'source> Lexer<'source> {
         }
     }
 
-    fn scan_string(&mut self, reporter: &mut ErrorReporter<MessageMarker>) -> Token {
+    fn scan_string(&mut self, reporter: &mut ErrorReporter<MessageMarker>) -> Token<'source> {
         while let Ok(c) = self.peek() {
             if c == '"' {
                 break;
@@ -323,7 +327,7 @@ impl<'source> Lexer<'source> {
         }
     }
 
-    fn scan_number(&mut self, _reporter: &mut ErrorReporter<MessageMarker>) -> Token {
+    fn scan_number(&mut self, _reporter: &mut ErrorReporter<MessageMarker>) -> Token<'source> {
         while let Ok('0'..='9') = self.peek() {
             let _ = self.consume();
         }
@@ -354,7 +358,7 @@ impl<'source> Lexer<'source> {
         self.make_token(if floating_point { TokenType::LiteralFloat } else { TokenType::LiteralInt })
     }
 
-    fn scan_identifier(&mut self, _reporter: &mut ErrorReporter<MessageMarker>) -> Token {
+    fn scan_identifier(&mut self, _reporter: &mut ErrorReporter<MessageMarker>) -> Token<'source> {
         while let Ok(c) = self.peek() {
             if !util::is_alphanumeric(c) {
                 break;
@@ -454,7 +458,7 @@ impl<'source> Lexer<'source> {
         }
     }
 
-    fn make_token(&self, token_type: TokenType) -> Token {
+    fn make_token(&self, token_type: TokenType) -> Token<'source> {
         Token {
             token_type,
             source: &self.input[self.start_pos.index as usize..self.current_pos.index as usize],

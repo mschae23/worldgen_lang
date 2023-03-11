@@ -2,35 +2,13 @@ use std::fmt::Debug;
 use std::path::PathBuf;
 use std::rc::Rc;
 use line_col::LineColLookup;
-use crate::compiler::lexer::TokenPos;
+use crate::compiler::error::span::Span;
 use crate::Config;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CompileStage {
     Lexer,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Span {
-    pub start: u32,
-    pub end: u32,
-}
-
-impl Span {
-    pub fn from(start: TokenPos, end: TokenPos) -> Self {
-        Span {
-            start: start.index, end: end.index,
-        }
-    }
-
-    pub fn start(&self) -> u32 {
-        self.start
-    }
-
-    pub fn end(&self) -> u32 {
-        self.end
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,20 +128,20 @@ impl<'source> ErrorReporting<'source> {
         let lines = self.lines.get_or_insert_with(|| self.source.lines().collect());
 
         for (i, message) in self.messages.iter().enumerate() {
-            print!("{}", match message.kind {
+            eprint!("{}", match message.kind {
                 MessageKind::Error => "error",
                 MessageKind::Warning => "warning",
             });
 
-            print!("[{}]: ", message.name);
-            println!("{}", message.description);
+            eprint!("[{}]: ", message.name);
+            eprintln!("{}", message.description);
 
             let (start_line, start_column) = self.line_col_lookup.get(message.span.start as usize);
             let (end_line, _end_column) = self.line_col_lookup.get(message.span.start as usize);
 
             let line_digits = (end_line + self.config.error_surrounding_lines as usize).ilog10() + 1;
 
-            println!("{}--> {}:{}:{}", " ".repeat(line_digits as usize), self.path.display(), start_line, start_column);
+            eprintln!("{}--> {}:{}:{}", " ".repeat(line_digits as usize), self.path.display(), start_line, start_column);
 
             let print_start_line = if self.config.error_surrounding_lines as usize > start_line {
                 0
@@ -174,14 +152,14 @@ impl<'source> ErrorReporting<'source> {
 
             for line in print_start_line..=print_end_line {
                 if line >= start_line && line <= end_line {
-                    println!("{:>fill$} | {}", line, lines[line - 1], fill = line_digits as usize);
+                    eprintln!("{:>fill$} | {}", line, lines[line - 1], fill = line_digits as usize);
                 } else {
-                    println!("{} | {}", " ".repeat(line_digits as usize), lines[line - 1]);
+                    eprintln!("{} | {}", " ".repeat(line_digits as usize), lines[line - 1]);
                 }
             }
 
             if i < self.messages.len() - 1 {
-                println!();
+                eprintln!();
             }
         }
     }
