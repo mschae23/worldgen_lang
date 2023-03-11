@@ -24,41 +24,41 @@ pub enum NoteKind {
 #[derive(Debug)]
 pub struct SubmittedMessageData<M> {
     pub span: Span,
-    pub message: Box<dyn Message<M>>,
+    pub message: M,
     pub suppressed_messages: Vec<SubmittedMessageData<M>>,
 }
 
 impl<M> SubmittedMessageData<M> {
-    pub fn new<M2: Message<M> + 'static>(span: Span, message: M2) -> Self {
+    pub fn new(span: Span, message: M) -> Self {
         SubmittedMessageData {
-            span, message: Box::new(message),
+            span, message,
             suppressed_messages: Vec::new(),
         }
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct MessageContext<'m, M> {
+pub struct MessageContext<'md, MD> {
     pub span: Span,
-    pub marker: &'m M,
+    pub marker: &'md MD,
 }
 
-impl<'m, M> MessageContext<'m, M> {
-    pub fn new(span: Span, marker: &'m M) -> Self {
+impl<'md, MD> MessageContext<'md, MD> {
+    pub fn new(span: Span, marker: &'md MD) -> Self {
         MessageContext {
             span, marker,
         }
     }
 }
 
-pub trait Message<M>: Debug {
+pub trait Message<MD>: Debug {
     fn name(&self) -> &'static str;
 
     fn kind(&self) -> MessageKind;
 
-    fn description(&mut self, context: &MessageContext<'_, M>) -> String;
+    fn description(&mut self, context: &MessageContext<'_, MD>) -> String;
 
-    fn notes(&mut self, context: &MessageContext<'_, M>) -> Vec<(NoteKind, String)>;
+    fn notes(&mut self, context: &MessageContext<'_, MD>) -> Vec<(NoteKind, String)>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -97,11 +97,11 @@ impl<'source> ErrorReporting<'source> {
         }
     }
 
-    pub fn create_for_stage<M>(&self, stage: CompileStage, marker: M) -> ErrorReporter<M> {
+    pub fn create_for_stage<MD, M>(&self, stage: CompileStage, marker: MD) -> ErrorReporter<MD, M> {
         ErrorReporter::new(stage, marker)
     }
 
-    pub fn submit<M: Default>(&mut self, mut reporter: ErrorReporter<M>) {
+    pub fn submit<MD: Default, M: Message<MD>>(&mut self, mut reporter: ErrorReporter<MD, M>) {
         let stage = reporter.stage;
         let marker = std::mem::take(&mut reporter.marker);
         let messages = std::mem::take(&mut reporter.messages);
@@ -179,15 +179,15 @@ impl<'source> ErrorReporting<'source> {
     }
 }
 
-pub struct ErrorReporter<M> {
+pub struct ErrorReporter<MD, M> {
     stage: CompileStage,
-    pub marker: M,
+    pub marker: MD,
     messages: Vec<SubmittedMessageData<M>>,
     panic_mode: bool,
 }
 
-impl<M> ErrorReporter<M> {
-    fn new(stage: CompileStage, marker: M) -> Self {
+impl<MD, M> ErrorReporter<MD, M> {
+    fn new(stage: CompileStage, marker: MD) -> Self {
         ErrorReporter {
             stage,
             marker,
@@ -196,15 +196,15 @@ impl<M> ErrorReporter<M> {
         }
     }
 
-    pub fn marker(&self) -> &M {
+    pub fn marker(&self) -> &MD {
         &self.marker
     }
 
-    pub fn marker_mut(&mut self) -> &mut M {
+    pub fn marker_mut(&mut self) -> &mut MD {
         &mut self.marker
     }
 
-    pub fn report<M2: Message<M> + 'static>(&mut self, span: Span, message: M2, panic: bool) { // panic is unrelated to a Rust "panic!"
+    pub fn report(&mut self, span: Span, message: M, panic: bool) { // panic is unrelated to a Rust "panic!"
         if self.panic_mode {
             self.messages.last_mut().expect("Error reporter is in panic mode, but there are no errors")
                 .suppressed_messages.push(SubmittedMessageData::new(span, message));

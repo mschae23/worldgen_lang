@@ -13,7 +13,7 @@ impl Span {
         }
     }
 
-    pub fn from(start: TokenPos, end: TokenPos) -> Self {
+    pub fn from_pos(start: &TokenPos, end: &TokenPos) -> Self {
         Self::new(start.index, end.index)
     }
 
@@ -28,7 +28,7 @@ impl Span {
 
 impl<'source> From<Token<'source>> for Span {
     fn from(value: Token<'source>) -> Self {
-        Self::from(value.start, value.end)
+        Self::from_pos(&value.start, &value.end)
     }
 }
 
