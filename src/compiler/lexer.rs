@@ -138,9 +138,9 @@ pub enum LexerError {
 impl LexerError {
     pub fn char_byte_offset(&self) -> u32 {
         match self {
-            LexerError::UnexpectedEof => 0,
-            LexerError::UnexpectedCharacter(c) => c.len_utf8() as u32,
-            LexerError::ExpectedCharacter { got, .. } => got.len_utf8() as u32,
+            Self::UnexpectedEof => 0,
+            Self::UnexpectedCharacter(c) => c.len_utf8() as u32,
+            Self::ExpectedCharacter { got, .. } => got.len_utf8() as u32,
             _ => 0,
         }
     }
@@ -149,11 +149,11 @@ impl LexerError {
 impl Message<MessageMarker> for LexerError {
     fn name(&self) -> &'static str {
         match self {
-            LexerError::UnexpectedEof => "lexer/unexpected_eof",
-            LexerError::UnexpectedCharacter(_) => "lexer/unexpected_character",
-            LexerError::ExpectedCharacter { .. } => "lexer/expected_character",
-            LexerError::UnterminatedString => "lexer/unterminated_string",
-            LexerError::OtherError(_) => "lexer/unknown",
+            Self::UnexpectedEof => "lexer/unexpected_eof",
+            Self::UnexpectedCharacter(_) => "lexer/unexpected_character",
+            Self::ExpectedCharacter { .. } => "lexer/expected_character",
+            Self::UnterminatedString => "lexer/unterminated_string",
+            Self::OtherError(_) => "lexer/unknown",
         }
     }
 
@@ -163,12 +163,20 @@ impl Message<MessageMarker> for LexerError {
 
     fn description(&mut self, _context: &MessageContext<'_, ()>) -> String {
         match self {
-            LexerError::UnexpectedEof => String::from("Unexpected EOF"),
-            LexerError::UnexpectedCharacter(c) => format!("Unexpected character '{}'", c),
-            LexerError::ExpectedCharacter { expected, got } => format!("Expected character '{}', got '{}'", expected, got),
-            LexerError::UnterminatedString => String::from("Unterminated string"),
-            LexerError::OtherError(msg) => msg.clone(),
+            Self::UnexpectedEof => String::from("Unexpected EOF"),
+            Self::UnexpectedCharacter(c) => format!("Unexpected character '{}'", c),
+            Self::ExpectedCharacter { expected, got } => format!("Expected character '{}', got '{}'", expected, got),
+            Self::UnterminatedString => String::from("Unterminated string"),
+            Self::OtherError(msg) => msg.clone(),
         }
+    }
+
+    fn main_inline_note(&mut self, _context: &MessageContext<'_, MessageMarker>) -> Option<String> {
+        None
+    }
+
+    fn additional_inline_notes(&mut self, _context: &MessageContext<'_, MessageMarker>) -> Vec<(Span, Option<String>)> {
+        Vec::new()
     }
 
     fn notes(&mut self, _context: &MessageContext<'_, ()>) -> Vec<(NoteKind, String)> {

@@ -1,7 +1,8 @@
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::rc::Rc;
-use line_col::LineColLookup;
+use crate::compiler::error::render;
+use crate::compiler::error::render::ColorConfig;
 use crate::compiler::error::span::Span;
 use crate::Config;
 
@@ -9,6 +10,7 @@ use crate::Config;
 #[repr(u8)]
 pub enum CompileStage {
     Lexer,
+    Parser,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +60,10 @@ pub trait Message<MD>: Debug {
 
     fn description(&mut self, context: &MessageContext<'_, MD>) -> String;
 
+    fn main_inline_note(&mut self, context: &MessageContext<'_, MD>) -> Option<String>;
+
+    fn additional_inline_notes(&mut self, context: &MessageContext<'_, MD>) -> Vec<(Span, Option<String>)>;
+
     fn notes(&mut self, context: &MessageContext<'_, MD>) -> Vec<(NoteKind, String)>;
 }
 
@@ -68,14 +74,19 @@ pub struct MessageData {
     pub name: &'static str,
     pub kind: MessageKind,
     pub description: String,
+    pub main_inline_note: Option<String>,
+    pub additional_inline_notes: Vec<(Span, Option<String>)>,
     pub notes: Vec<(NoteKind, String)>,
     pub suppressed_messages: u32,
 }
 
 impl MessageData {
-    pub fn new(span: Span, stage: CompileStage, name: &'static str, kind: MessageKind, description: String, notes: Vec<(NoteKind, String)>, suppressed_messages: u32) -> Self {
+    pub fn new(span: Span, stage: CompileStage, name: &'static str, kind: MessageKind,
+               description: String,
+               main_inline_note: Option<String>, additional_inline_notes: Vec<(Span, Option<String>)>,
+               notes: Vec<(NoteKind, String)>, suppressed_messages: u32) -> Self {
         MessageData {
-            span, stage, name, kind, description, notes, suppressed_messages,
+            span, stage, name, kind, description, main_inline_note, additional_inline_notes, notes, suppressed_messages,
         }
     }
 }
@@ -83,7 +94,6 @@ impl MessageData {
 pub struct ErrorReporting<'source> {
     config: Rc<Config>,
     source: &'source str, path: Rc<PathBuf>,
-    lines: Option<Vec<&'source str>>, line_col_lookup: LineColLookup<'source>,
     messages: Vec<MessageData>,
 }
 
@@ -91,8 +101,6 @@ impl<'source> ErrorReporting<'source> {
     pub fn new(config: Rc<Config>, source: &'source str, path: Rc<PathBuf>) -> Self {
         ErrorReporting {
             config, source, path,
-            // LineColLookup only builds on first lookup, so just creating it here should be fine
-            lines: None, line_col_lookup: LineColLookup::new(source),
             messages: Vec::new(),
         }
     }
@@ -113,9 +121,12 @@ impl<'source> ErrorReporting<'source> {
             let name: &'static str = message.message.name();
             let kind = message.message.kind();
             let description = message.message.description(&context);
+            let main_inline_note = message.message.main_inline_note(&context);
+            let additional_inline_notes = message.message.additional_inline_notes(&context);
             let notes = message.message.notes(&context);
 
-            MessageData::new(message.span, stage, name, kind, description, notes, message.suppressed_messages.len() as u32)
+            MessageData::new(message.span, stage, name, kind, description,
+                main_inline_note, additional_inline_notes, notes, message.suppressed_messages.len() as u32)
         }));
     }
 
@@ -124,58 +135,8 @@ impl<'source> ErrorReporting<'source> {
     }
 
     pub fn print_simple(&mut self) {
-        if self.messages.is_empty() {
-            return;
-        }
-
-        let lines = self.lines.get_or_insert_with(|| self.source.lines().collect());
-
-        for (i, message) in self.messages.iter().enumerate() {
-            eprint!("{}", match message.kind {
-                MessageKind::Error => "error",
-                MessageKind::Warning => "warning",
-            });
-
-            eprint!("[{}]: ", message.name);
-            eprintln!("{}", message.description);
-
-            let (start_line, start_column) = self.line_col_lookup.get(message.span.start as usize);
-            let (end_line, _end_column) = self.line_col_lookup.get(message.span.start as usize);
-
-            let line_digits = (end_line + self.config.error_surrounding_lines as usize).ilog10() + 1;
-            let empty_line_number = " ".repeat(line_digits as usize);
-
-            eprintln!("{}--> {}:{}:{}", &empty_line_number, self.path.display(), start_line, start_column);
-
-            let print_start_line = if self.config.error_surrounding_lines as usize > start_line {
-                0
-            } else {
-                start_line - self.config.error_surrounding_lines as usize
-            };
-            let print_end_line = (end_line + self.config.error_surrounding_lines as usize).min(lines.len());
-
-            for line in print_start_line..=print_end_line {
-                if line >= start_line && line <= end_line {
-                    eprintln!("{:>fill$} | {}", line, lines[line - 1], fill = line_digits as usize);
-                } else {
-                    eprintln!("{} | {}", &empty_line_number, lines[line - 1]);
-                }
-            }
-
-            if message.suppressed_messages > 0 {
-                eprintln!("{} |", &empty_line_number);
-                eprintln!("{} | ... and {} more", &empty_line_number, message.suppressed_messages);
-            }
-
-            if i < self.messages.len() - 1 {
-                eprintln!();
-            }
-        }
-    }
-
-    #[allow(unused)]
-    fn lines(&mut self) -> &[&'source str] {
-        self.lines.get_or_insert_with(|| self.source.lines().collect())
+        let mut renderer = render::TerminalErrorRenderer::new(Rc::clone(&self.config), Rc::clone(&self.path), ColorConfig::ColoredDefault, &self.source, &self.messages);
+        renderer.render();
     }
 }
 

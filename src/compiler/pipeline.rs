@@ -1,6 +1,8 @@
 use std::rc::Rc;
-use crate::compiler::error::ErrorReporting;
+use crate::compiler::ast::simple::Decl;
+use crate::compiler::error::{CompileStage, ErrorReporting};
 use crate::compiler::lexer::Lexer;
+use crate::compiler::parser::Parser;
 use crate::Config;
 
 impl CompileState {
@@ -34,11 +36,24 @@ pub struct TokenizedState<'source> {
 }
 
 impl<'source> TokenizedState<'source> {
-    /* pub fn parse(self) -> ParsedState<'source> {
+    pub fn parse(self) -> ParsedState<'source> {
+        let mut lexer_reporter = self.reporting.create_for_stage(CompileStage::Lexer, ());
+        let mut parser_reporter = self.reporting.create_for_stage(CompileStage::Parser, ());
+
+        let mut parser = Parser::new(self.lexer);
+        let declarations = parser.parse(&mut parser_reporter, &mut lexer_reporter);
+
         ParsedState {
-            reporting, // ...
+            config: self.config, reporting: self.reporting,
+            declarations,
         }
-    } */
+    }
+}
+
+pub struct ParsedState<'source> {
+    pub config: Rc<Config>,
+    pub reporting: ErrorReporting<'source>,
+    pub declarations: Vec<Decl<'source>>,
 }
 
 pub struct CompileState {

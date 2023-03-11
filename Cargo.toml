@@ -11,6 +11,7 @@ strip = "symbols"
 
 [dependencies]
 clap = { version = "4.1.8", features = ["derive"] }
+lazy_static = "1.4.0"
 line-col = "0.2.1"
 non-empty-vec = "0.2.3"
-lazy_static = "1.4.0"
+colored = "2.0.0"

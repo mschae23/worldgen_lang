@@ -30,23 +30,45 @@ pub type MessageMarker = ();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParserError {
+    ExpectedStatementEnd,
 }
 
 impl Message<MessageMarker> for ParserError {
     fn name(&self) -> &'static str {
-        todo!()
+        match self {
+            Self::ExpectedStatementEnd => "parser/expected_statement_end",
+        }
     }
 
     fn kind(&self) -> MessageKind {
-        todo!()
+        match self {
+            Self::ExpectedStatementEnd => MessageKind::Error,
+        }
     }
 
     fn description(&mut self, _context: &MessageContext<'_, MessageMarker>) -> String {
-        todo!()
+        match self {
+            Self::ExpectedStatementEnd => String::from("Expected `;` after statement"),
+        }
+    }
+
+    fn main_inline_note(&mut self, _context: &MessageContext<'_, MessageMarker>) -> Option<String> {
+        match self {
+            Self::ExpectedStatementEnd => Some(String::from("`;` was expected here")),
+            _ => None,
+        }
+    }
+
+    fn additional_inline_notes(&mut self, _context: &MessageContext<'_, MessageMarker>) -> Vec<(Span, Option<String>)> {
+        match self {
+            _ => Vec::new(),
+        }
     }
 
     fn notes(&mut self, _context: &MessageContext<'_, MessageMarker>) -> Vec<(NoteKind, String)> {
-        todo!()
+        match self {
+            _ => Vec::new(),
+        }
     }
 }
 
@@ -107,16 +129,16 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn expect(&mut self, token_type: TokenType, _message: &str, _reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) {
+    fn expect(&mut self, token_type: TokenType, message: ParserError, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) {
         if self.current.token_type() == token_type {
             self.consume(lexer_reporter);
             return;
         }
 
-        // self.error_at_current(message, true);
+        self.error_at_current(message, true, reporter);
     }
 
-    fn expect_any(&mut self, token_types: &[TokenType], _message: &str, _reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) {
+    fn expect_any(&mut self, token_types: &[TokenType], message: ParserError, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) {
         for token_type in token_types {
             if self.current.token_type() == *token_type {
                 self.consume(lexer_reporter);
@@ -124,12 +146,12 @@ impl<'source> Parser<'source> {
             }
         }
 
-        // self.error_at_current(message, true);
+        self.error_at_current(message, true, reporter);
     }
 
     #[inline]
     fn expect_statement_end(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) {
-        self.expect(TokenType::Semicolon, "Expected ';' after statement", reporter, lexer_reporter);
+        self.expect(TokenType::Semicolon, ParserError::ExpectedStatementEnd, reporter, lexer_reporter);
     }
 
     fn matches(&mut self, token_type: TokenType, lexer_reporter: &mut LexerErrorReporter) -> bool { // Should be called "match", but that's a keyword
