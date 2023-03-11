@@ -313,7 +313,7 @@ impl<'source> Lexer<'source> {
         }
 
         if self.is_eof() {
-            reporter.report(Span::from(self.start_pos.clone(), self.current_pos.clone()), LexerError::UnterminatedString);
+            reporter.report(Span::from(self.start_pos.clone(), self.current_pos.clone()), LexerError::UnterminatedString, false);
             self.make_token(TokenType::Error)
         } else {
             let _ = self.consume(); // the trailing '"'
@@ -597,6 +597,6 @@ impl<'source> Lexer<'source> {
     fn report_char(&self, reporter: &mut ErrorReporter<MessageMarker>, error: LexerError, byte_offset: u32) {
         reporter.report(Span::from(self.current_pos.clone(),
             TokenPos::new(self.current_pos.line, self.current_pos.column + if byte_offset > 0 { 1 } else { 0 }, self.current_pos.index + byte_offset)),
-            error);
+            error, false);
     }
 }

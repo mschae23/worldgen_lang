@@ -57,19 +57,19 @@ impl<'source> Parser<'source> {
 
     // Declaration parsing
 
-    pub fn parse(&mut self, lexer_reporter: &mut ErrorReporter<lexer::MessageMarker>) -> Vec<Decl<'source>> {
+    pub fn parse(&mut self, reporter: &mut ErrorReporter<MessageMarker>, lexer_reporter: &mut ErrorReporter<lexer::MessageMarker>) -> Vec<Decl<'source>> {
         self.consume(lexer_reporter);
 
         let mut declarations = Vec::new();
 
         while !self.is_eof() {
-            declarations.push(self.parse_declaration());
+            declarations.push(self.parse_declaration(reporter));
         }
 
         declarations
     }
 
-    fn parse_declaration(&mut self) -> Decl<'source> {
+    fn parse_declaration(&mut self, _reporter: &mut ErrorReporter<MessageMarker>) -> Decl<'source> {
         todo!()
     }
 
@@ -89,7 +89,7 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn expect(&mut self, token_type: TokenType, _message: &str, lexer_reporter: &mut ErrorReporter<lexer::MessageMarker>) {
+    fn expect(&mut self, token_type: TokenType, _message: &str, _reporter: &mut ErrorReporter<MessageMarker>, lexer_reporter: &mut ErrorReporter<lexer::MessageMarker>) {
         if self.current.token_type() == token_type {
             self.consume(lexer_reporter);
             return;
@@ -98,7 +98,7 @@ impl<'source> Parser<'source> {
         // self.error_at_current(message, true);
     }
 
-    fn expect_any(&mut self, token_types: &[TokenType], _message: &str, lexer_reporter: &mut ErrorReporter<lexer::MessageMarker>) {
+    fn expect_any(&mut self, token_types: &[TokenType], _message: &str, _reporter: &mut ErrorReporter<MessageMarker>, lexer_reporter: &mut ErrorReporter<lexer::MessageMarker>) {
         for token_type in token_types {
             if self.current.token_type() == *token_type {
                 self.consume(lexer_reporter);
@@ -110,8 +110,8 @@ impl<'source> Parser<'source> {
     }
 
     #[inline]
-    fn expect_statement_end(&mut self, lexer_reporter: &mut ErrorReporter<lexer::MessageMarker>) {
-        self.expect(TokenType::Semicolon, "Expected ';' after statement", lexer_reporter);
+    fn expect_statement_end(&mut self, reporter: &mut ErrorReporter<MessageMarker>, lexer_reporter: &mut ErrorReporter<lexer::MessageMarker>) {
+        self.expect(TokenType::Semicolon, "Expected ';' after statement", reporter, lexer_reporter);
     }
 
     fn matches(&mut self, token_type: TokenType, lexer_reporter: &mut ErrorReporter<lexer::MessageMarker>) -> bool { // Should be called "match", but that's a keyword
@@ -145,8 +145,9 @@ impl<'source> Parser<'source> {
 
     // Error handling
 
-    fn synchronize(&mut self, lexer_reporter: &mut ErrorReporter<lexer::MessageMarker>) {
+    fn synchronize(&mut self, reporter: &mut ErrorReporter<MessageMarker>, lexer_reporter: &mut ErrorReporter<lexer::MessageMarker>) {
         self.panic_mode = false;
+        reporter.exit_panic_mode();
 
         while self.current.token_type() != TokenType::Eof {
             if self.previous.token_type() == TokenType::Semicolon {

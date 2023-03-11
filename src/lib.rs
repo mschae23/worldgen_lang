@@ -39,7 +39,7 @@ pub fn run() -> Result<(), std::io::Error> {
     std::fs::create_dir_all(&config.target_dir)?;
     // let mut writer = JsonWriter::new(config.indentation.to_owned(), !config.no_pretty_print);
 
-    let mut reporter = pipeline.reporting.create_for_stage(CompileStage::Lexer);
+    let mut reporter = pipeline.reporting.create_for_stage(CompileStage::Lexer, ());
 
     loop {
         let token = pipeline.lexer.scan_token(&mut reporter);
