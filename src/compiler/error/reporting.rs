@@ -159,7 +159,7 @@ impl<'source> ErrorReporting<'source> {
     }
 
     pub fn print_simple(&mut self) {
-        let mut renderer = render::TerminalErrorRenderer::new(Rc::clone(&self.config), Rc::clone(&self.path), ColorConfig::ColoredDefault, &self.source, &self.messages);
+        let mut renderer = render::TerminalErrorRenderer::new(Rc::clone(&self.config), Rc::clone(&self.path), ColorConfig::Default, &self.source, &self.messages);
         renderer.render_to_stderr();
     }
 }

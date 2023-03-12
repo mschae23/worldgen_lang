@@ -1,78 +1,77 @@
-use std::fmt::Write;
+use std::io::Write;
 use std::path::PathBuf;
 use std::rc::Rc;
-use colored::Colorize;
 use line_col::LineColLookup;
+use termcolor::{BufferedStandardStream, Color, ColorChoice, ColorSpec, NoColor, WriteColor};
 use crate::compiler::error::{MessageData, MessageKind};
 use crate::compiler::error::span::Span;
 use crate::Config;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ColorConfig {
-    Uncolored,
-    ColoredDefault,
+    Default,
 }
 
 impl ColorConfig {
-    pub fn error(&self, string: &str) -> colored::ColoredString {
+    pub fn reset(&self, f: &mut impl WriteColor) -> std::io::Result<()> {
+        f.reset()
+    }
+
+    pub fn error(&self, f: &mut impl WriteColor) -> std::io::Result<()> {
         match self {
-            ColorConfig::Uncolored => colored::ColoredString::from(string),
-            ColorConfig::ColoredDefault => string.red(),
+            Self::Default => f.set_color(ColorSpec::new().set_fg(Some(Color::Red))),
         }
     }
 
-    pub fn warning(&self, string: &str) -> colored::ColoredString {
+    pub fn warning(&self, f: &mut impl WriteColor) -> std::io::Result<()> {
         match self {
-            ColorConfig::Uncolored => colored::ColoredString::from(string),
-            ColorConfig::ColoredDefault => string.yellow(),
+            Self::Default => f.set_color(ColorSpec::new().set_fg(Some(Color::Yellow))),
         }
     }
 
-    pub fn message(&self, string: &str, kind: MessageKind) -> colored::ColoredString {
+    pub fn message(&self, f: &mut impl WriteColor, kind: MessageKind) -> std::io::Result<()> {
         match kind {
-            MessageKind::Error => self.error(string),
-            MessageKind::Warning => self.warning(string),
+            MessageKind::Error => self.error(f),
+            MessageKind::Warning => self.warning(f),
         }
     }
 
-    pub fn description(&self, string: &str) -> colored::ColoredString {
+    pub fn description(&self, f: &mut impl WriteColor) -> std::io::Result<()> {
         match self {
-            ColorConfig::Uncolored => colored::ColoredString::from(string),
-            ColorConfig::ColoredDefault => string.bold(),
+            Self::Default => f.set_color(ColorSpec::new().set_bold(true)),
         }
     }
 
-    pub fn line_number(&self, string: &str) -> colored::ColoredString {
+    pub fn line_number(&self, f: &mut impl WriteColor) -> std::io::Result<()> {
         match self {
-            ColorConfig::Uncolored => colored::ColoredString::from(string),
-            ColorConfig::ColoredDefault => string.bright_blue().bold(),
+            Self::Default => f.set_color(ColorSpec::new().set_fg(Some(Color::Blue)).set_intense(true).set_bold(true)),
         }
     }
 
-    pub fn line_number_separator(&self, string: &str) -> colored::ColoredString {
+    pub fn line_number_separator(&self, f: &mut impl WriteColor) -> std::io::Result<()> {
         match self {
-            ColorConfig::Uncolored => colored::ColoredString::from(string),
-            ColorConfig::ColoredDefault => string.bright_blue(),
+            Self::Default => f.set_color(ColorSpec::new().set_fg(Some(Color::Blue)).set_intense(true)),
         }
     }
 
-    pub fn additional_annotation(&self, string: &str) -> colored::ColoredString {
+    pub fn additional_annotation(&self, f: &mut impl WriteColor) -> std::io::Result<()> {
         match self {
-            ColorConfig::Uncolored => colored::ColoredString::from(string),
-            ColorConfig::ColoredDefault => string.bright_blue(),
+            Self::Default => f.set_color(ColorSpec::new().set_fg(Some(Color::Blue)).set_intense(true)),
         }
     }
 
-    pub fn annotation(&self, string: &str, annotation: &AnnotationData) -> colored::ColoredString {
+    pub fn annotation(&self, f: &mut impl WriteColor, annotation: &AnnotationData) -> std::io::Result<()> {
         if annotation.primary {
-            self.message(string, annotation.message_kind)
+            self.message(f, annotation.message_kind)
         } else {
-            self.additional_annotation(string)
+            self.additional_annotation(f)
         }
     }
 
-    pub fn source(&self, string: &str) -> colored::ColoredString {
-        colored::ColoredString::from(string)
+    pub fn source(&self, f: &mut impl WriteColor) -> std::io::Result<()> {
+        match self {
+            Self::Default => self.reset(f),
+        }
     }
 }
 
@@ -141,7 +140,9 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
             return;
         }
 
-        eprint!("{}", self.render_to_string());
+        let mut buf = BufferedStandardStream::stderr(ColorChoice::Auto);
+        self.render_impl(&mut buf).expect("Failed to render error messages");
+        buf.flush().expect("Failed to flush stderr");
     }
 
     pub fn render_to_string(&mut self) -> String {
@@ -149,12 +150,12 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
             return String::new();
         }
 
-        let mut buf = String::new();
+        let mut buf = NoColor::new(std::io::Cursor::new(Vec::new()));
         self.render_impl(&mut buf).expect("Failed to render error messages");
-        buf
+        String::from_utf8_lossy(&buf.into_inner().into_inner()).into_owned()
     }
 
-    fn render_impl(&mut self, f: &mut impl Write) -> std::fmt::Result {
+    fn render_impl(&mut self, f: &mut impl WriteColor) -> std::io::Result<()> {
         for (i, message) in self.messages.iter().enumerate() {
             self.print_message(f, message)?;
 
@@ -166,14 +167,19 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         Ok(())
     }
 
-    fn print_message(&mut self, f: &mut impl Write, message: &MessageData) -> std::fmt::Result {
-        write!(f, "{}", self.colors.message(match message.kind {
+    fn print_message(&mut self, f: &mut impl WriteColor, message: &MessageData) -> std::io::Result<()> {
+        self.colors.message(f, message.kind)?;
+        write!(f, "{}", match message.kind {
             MessageKind::Error => "error",
             MessageKind::Warning => "warning",
-        }, message.kind))?;
+        })?;
+        // self.colors.reset(f)?;
 
-        write!(f, "{}{}{}: ", self.colors.message("[", message.kind), self.colors.message(message.name, message.kind), self.colors.message("]", message.kind))?;
-        writeln!(f, "{}", self.colors.description(&message.description))?;
+        self.colors.message(f, message.kind)?;
+        write!(f, "{}{}{}: ", "[", message.name, "]")?;
+        self.colors.description(f)?;
+        writeln!(f, "{}", &message.description)?;
+        self.colors.reset(f)?;
 
         let mut annotations = self.collect_annotations(message);
         annotations.sort_by(|a, b| a.start.line.cmp(&b.start.line).then_with(|| a.start.column.cmp(&b.start.column).reverse()));
@@ -234,7 +240,7 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         });
     }
 
-    fn print_source_block_with_annotations(&mut self, f: &mut impl Write, mut annotations: Vec<AnnotationData>) -> std::fmt::Result {
+    fn print_source_block_with_annotations(&mut self, f: &mut impl WriteColor, mut annotations: Vec<AnnotationData>) -> std::io::Result<()> {
         self.calculate_annotation_data(&mut annotations);
 
         let last_note_line = annotations.iter().map(|a| a.end.line).max()
@@ -332,43 +338,70 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         self.max_nested_blocks = max_nested_blocks;
     }
 
-    fn print_lines_with_annotations(&mut self, f: &mut impl Write, annotations: Vec<AnnotationData>) -> std::fmt::Result {
+    fn print_lines_with_annotations(&mut self, f: &mut impl WriteColor, annotations: Vec<AnnotationData>) -> std::io::Result<()> {
         let mut already_printed_to = 0;
         let mut annotations_on_line = Vec::new();
-        let mut last_line = 0;
+        let mut continuing_annotations = Vec::new();
+        let mut current_line = 0;
+        let mut last_line = None;
         let mut min_index = 0;
 
-        'outer: loop {
-            last_line = match annotations.iter().skip(min_index).next() {
+        loop {
+            current_line = match annotations.iter().skip(min_index).next() {
                 None => break,
-                Some(annotation) => (last_line + 1).max(annotation.start.line),
+                Some(annotation) => (current_line + 1).max(annotation.start.line),
             };
 
             for (i, annotation) in annotations.iter().enumerate().skip(min_index) {
-                if annotation.start.line > last_line && annotation.end.line > last_line {
+                if annotation.start.line > current_line && annotation.end.line > current_line {
                     break;
-                } else if annotation.end.line < last_line && annotation.start.line < last_line {
+                } else if annotation.end.line < current_line && annotation.start.line < current_line {
                     min_index = i + 1;
                     continue;
                 }
 
-                if annotation.start.line == last_line || annotation.end.line == last_line {
+                if annotation.start.line == current_line || annotation.end.line == current_line {
                     annotations_on_line.push(annotation);
+                } else if annotation.start.line < current_line && annotation.end.line >= current_line {
+                    continuing_annotations.push(annotation);
                 }
             }
 
-            if last_line != 0 && !annotations_on_line.is_empty() {
-                self.print_part_lines(f, last_line, &annotations_on_line, &mut already_printed_to)?;
+            if current_line != 0 && !annotations_on_line.is_empty() {
+                self.print_part_lines(f, current_line, last_line, &annotations_on_line, &continuing_annotations, &mut already_printed_to)?;
                 annotations_on_line.clear();
+                continuing_annotations.clear();
+
+                last_line = Some(current_line);
             }
         }
 
         Ok(())
     }
 
-    fn print_part_lines(&mut self, f: &mut impl Write, main_line: u32, annotations: &[&AnnotationData], already_printed_to: &mut u32) -> std::fmt::Result {
+    fn print_part_lines(&mut self, f: &mut impl WriteColor, main_line: u32, last_line: Option<u32>,
+                        annotations: &[&AnnotationData], continuing_annotations: &[&AnnotationData],
+                        already_printed_to: &mut u32) -> std::io::Result<()> {
+        if let Some(last_line) = last_line {
+            if last_line == *already_printed_to {
+                let first_print_line = (last_line + 1).max(*already_printed_to + 1);
+                let last_print_line = self.get_last_print_line(last_line).min(main_line - 1);
+
+                // writeln!(f, "[debug] last line ({}); first = {}, last = {}", last_line, first_print_line, last_print_line)?;
+
+                if last_print_line >= first_print_line {
+                    for line in first_print_line..=last_print_line {
+                        self.print_single_source_line(f, line, last_line, &[], continuing_annotations)?;
+                        *already_printed_to = line;
+                    }
+                }
+            }
+        }
+
         let first_print_line = self.get_start_print_line(main_line).max(*already_printed_to + 1);
-        let last_print_line = self.get_last_print_line(main_line);
+        let last_print_line = main_line;
+
+        // writeln!(f, "[debug] current line ({}); first = {}, last = {}", main_line, first_print_line, last_print_line)?;
 
         if first_print_line > *already_printed_to + 1 {
             self.write_line_number(f, None, "...")?;
@@ -376,37 +409,100 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         }
 
         for line in first_print_line..=last_print_line {
-            self.print_single_source_line(f, line, main_line, annotations)?;
+            self.print_single_source_line(f, line, main_line, annotations, continuing_annotations)?;
             *already_printed_to = line;
         }
 
         Ok(())
     }
 
-    fn print_single_source_line(&mut self, f: &mut impl Write, line: u32, _main_line: u32, annotations: &[&AnnotationData]) -> std::fmt::Result {
-        self.write_line_number(f, Some(line), " | ")?;
-        write!(f, "{:>nested_blocks$}", "", nested_blocks = 2 * self.max_nested_blocks as usize)?;
-        writeln!(f, "{}", self.colors.source(self.lines[line as usize - 1]))?;
+    fn print_single_source_line(&mut self, f: &mut impl WriteColor, line: u32, main_line: u32,
+                                annotations: &[&AnnotationData], continuing_annotations: &[&AnnotationData]) -> std::io::Result<()> {
+        self.write_line_begin(f, Some(line), " | ", continuing_annotations)?;
 
-        for annotation in annotations.iter() {
+        self.colors.source(f)?;
+        writeln!(f, "{}", &self.lines[line as usize - 1])?;
+        self.colors.reset(f)?;
+
+        if line != main_line {
+            return Ok(());
+        }
+
+        let mut underline_prototype = vec![0; self.lines[line as usize - 1].len()];
+        let mut message_kind = MessageKind::Error;
+
+        for annotation in annotations.iter().rev() {
+            message_kind = annotation.message_kind;
+
             if annotation.start.line != line && annotation.end.line != line {
                 continue;
             }
 
-            self.write_annotation_debug(f, annotation)?;
+            let start = annotation.start.line == line;
+            let end = annotation.end.line == line;
+
+            if start && end {
+                let start_column = annotation.start.column;
+                let end_column = annotation.end.column;
+
+                underline_prototype[start_column as usize - 1 .. end_column as usize - 1].fill(if annotation.primary { 1 } else { 2 });
+            } else {
+                let column = if start { annotation.start.column } else { annotation.end.column };
+                underline_prototype[column as usize - 1] = if annotation.primary { 1 } else { 2 };
+            }
+
+            // self.write_annotation_debug(f, annotation)?;
         }
+
+        self.write_line_begin(f, None, " | ", continuing_annotations)?;
+
+        for c in underline_prototype {
+            match c {
+                0 => write!(f, " ")?,
+                1 => {
+                    self.colors.message(f, message_kind)?;
+                    write!(f, "^")?;
+                    self.colors.reset(f)?;
+                },
+                2 => {
+                    self.colors.additional_annotation(f)?;
+                    write!(f, "-")?;
+                    self.colors.reset(f)?;
+                },
+                _ => {}, // Can't happen
+            }
+        }
+
+        writeln!(f)?;
 
         Ok(())
     }
 
-    fn write_line_number(&mut self, f: &mut impl Write, line: Option<u32>, separator: &str) -> std::fmt::Result {
+    fn write_line_number(&self, f: &mut impl WriteColor, line: Option<u32>, separator: &str) -> std::io::Result<()> {
         if let Some(line) = line {
-            write!(f, "{:>fill$}", self.colors.line_number(&line.to_string()), fill = self.line_digits as usize)?;
+            self.colors.line_number(f)?;
+            write!(f, "{:>fill$}", line, fill = self.line_digits as usize)?;
         } else {
             write!(f, "{:>fill$}", "", fill = self.line_digits as usize)?;
         }
 
-        write!(f, "{}", self.colors.line_number_separator(separator))
+        self.colors.line_number_separator(f)?;
+        write!(f, "{}", separator)?;
+        self.colors.reset(f)?;
+        Ok(())
+    }
+
+    fn write_line_begin(&self, f: &mut impl WriteColor, line: Option<u32>, separator: &str, continuing_annotations: &[&AnnotationData]) -> std::io::Result<()> {
+        self.write_line_number(f, line, separator)?;
+
+        for annotation in continuing_annotations.iter() {
+            self.colors.annotation(f, annotation)?;
+            write!(f, "| ")?;
+        }
+
+        self.colors.reset(f)?;
+        write!(f, "{:>nested_blocks$}", "", nested_blocks = 2 * self.max_nested_blocks as usize - continuing_annotations.len())?;
+        Ok(())
     }
 
     fn get_start_print_line(&self, line: u32) -> u32 {
@@ -421,7 +517,8 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         (line + self.config.error_surrounding_lines).min(self.lines.len() as u32)
     }
 
-    fn write_annotation_debug(&self, f: &mut impl Write, annotation: &AnnotationData) -> std::fmt::Result {
+    #[allow(unused)]
+    fn write_annotation_debug(&self, f: &mut impl WriteColor, annotation: &AnnotationData) -> std::io::Result<()> {
         write!(f, "[debug] annotation \"{}\"; primary = {:>5}, display kind = {}, ", annotation.label.as_ref().map::<&str, _>(|a| a).unwrap_or(""), annotation.primary, match &annotation.display_data {
             AnnotationDisplayData::Singleline { .. } => "singleline",
             AnnotationDisplayData::Multiline { .. } => "multiline",

@@ -183,7 +183,7 @@ impl Message<MessageMarker> for LexerError {
         vec![
             (Span::new(0, 6), Some(String::from("b"))),
             (Span::new(2, 20), Some(String::from("c"))),
-            (Span::new(10, 29), Some(String::from("d"))),
+            (Span::new(10, 26), Some(String::from("d"))),
         ]
     }
 
