@@ -171,12 +171,20 @@ impl Message<MessageMarker> for LexerError {
         }
     }
 
+    // DEBUG lexer emits useless annotations right now, for debugging the error message renderer
+
     fn primary_annotation(&self, _context: &MessageContext<'_, MessageMarker>) -> Option<String> {
-        None
+        Some(String::from("a"))
     }
 
     fn additional_annotations(&self, _context: &MessageContext<'_, MessageMarker>) -> Vec<(Span, Option<String>)> {
-        Vec::new()
+        // Vec::new()
+
+        vec![
+            (Span::new(0, 6), Some(String::from("b"))),
+            (Span::new(2, 20), Some(String::from("c"))),
+            (Span::new(10, 29), Some(String::from("d"))),
+        ]
     }
 
     fn primary_note(&self, _context: &MessageContext<'_, ()>) -> Option<(NoteKind, String)> {

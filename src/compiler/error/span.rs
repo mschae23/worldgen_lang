@@ -44,6 +44,10 @@ impl Span {
         (self.start <= other.start && self.end > other.start)
             || (other.start <= self.start && other.end > self.start)
     }
+
+    pub fn includes(&self, other: &Self) -> bool {
+        self.start <= other.start && self.end >= other.end
+    }
 }
 
 impl<'source> From<Token<'source>> for Span {
