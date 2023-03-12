@@ -36,12 +36,15 @@ pub struct TokenizedState<'source> {
 }
 
 impl<'source> TokenizedState<'source> {
-    pub fn parse(self) -> ParsedState<'source> {
+    pub fn parse(mut self) -> ParsedState<'source> {
         let mut lexer_reporter = self.reporting.create_for_stage(CompileStage::Lexer, ());
         let mut parser_reporter = self.reporting.create_for_stage(CompileStage::Parser, ());
 
         let mut parser = Parser::new(self.lexer);
         let declarations = parser.parse(&mut parser_reporter, &mut lexer_reporter);
+
+        self.reporting.submit(lexer_reporter);
+        self.reporting.submit(parser_reporter);
 
         ParsedState {
             config: self.config, reporting: self.reporting,

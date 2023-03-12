@@ -4,8 +4,6 @@ pub mod compiler;
 use std::path::PathBuf;
 use std::rc::Rc;
 use clap::Parser as ClapParser;
-use crate::compiler::error::CompileStage;
-use crate::compiler::lexer::TokenType;
 use crate::compiler::pipeline::CompileState;
 
 #[derive(ClapParser, Debug)]
@@ -32,32 +30,21 @@ pub fn run() -> Result<(), std::io::Error> {
 
     let source = std::fs::read_to_string(&config.input)?;
     let mut pipeline = CompileState::new(Rc::clone(&config), &source)
-        .tokenize();
+        .tokenize()
+        .parse();
 
     // compile
 
     std::fs::create_dir_all(&config.target_dir)?;
     // let mut writer = JsonWriter::new(config.indentation.to_owned(), !config.no_pretty_print);
 
-    let mut reporter = pipeline.reporting.create_for_stage(CompileStage::Lexer, ());
-
-    loop {
-        let token = pipeline.lexer.scan_token(&mut reporter);
-
-        if token.token_type == TokenType::Eof {
-            break;
-        }
-
-        println!("[{:>3}:{:<3}-{:>3}:{:<3}] {:?}: {:?}", token.start.line, token.start.column, token.end.line, token.end.column, &token.token_type, token);
-    }
-
-    pipeline.reporting.submit(reporter);
-
     if pipeline.reporting.has_messages() {
-        println!();
+        pipeline.reporting.print_simple();
+    } else {
+        for decl in &pipeline.declarations {
+            eprintln!("{:?}", decl);
+        }
     }
-
-    pipeline.reporting.print_simple();
 
     Ok(())
 }

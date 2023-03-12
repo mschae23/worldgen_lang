@@ -1,5 +1,6 @@
 use lazy_static::lazy_static;
-use crate::compiler::ast::simple::Decl;
+use non_empty_vec::ne_vec;
+use crate::compiler::ast::simple::{Decl, SingleImplementsPart, TypePart, TypeReferencePart};
 use crate::compiler::error::{ErrorReporter, Message, MessageContext, MessageKind, NoteKind};
 use crate::compiler::error::span::Span;
 use crate::compiler::lexer::{Lexer, LexerErrorReporter, Token, TokenType};
@@ -16,12 +17,13 @@ lazy_static! {
         TokenType::SquareBracketLeft, // [] operator
     ];
 
-    static ref ALLOWED_VARIABLE_TYPES: [TokenType; 8] = [
+    static ref ALLOWED_VARIABLE_TYPES: [TokenType; 9] = [
         TokenType::Int, TokenType::Float,
         TokenType::Boolean,
         TokenType::String,
         TokenType::Object, TokenType::Array,
         TokenType::Module,
+        TokenType::Identifier,
         TokenType::Underscore,
     ];
 }
@@ -31,31 +33,50 @@ pub type MessageMarker = ();
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParserError {
     ExpectedStatementEnd,
+    ExpectedAfter(&'static str, &'static str),
+    ExpectedBefore(&'static str, &'static str),
+    Expected(&'static str),
+    ExpectedDeclaration,
 }
 
 impl Message<MessageMarker> for ParserError {
     fn name(&self) -> &'static str {
         match self {
             Self::ExpectedStatementEnd => "parser/expected_statement_end",
+            Self::ExpectedAfter(_, _) => "parser/expected_after",
+            Self::ExpectedBefore(_, _) => "parser/expected_before",
+            Self::Expected(_) => "parser/expected",
+            Self::ExpectedDeclaration => "parser/expected_declaration",
         }
     }
 
     fn kind(&self) -> MessageKind {
         match self {
-            Self::ExpectedStatementEnd => MessageKind::Error,
+            Self::ExpectedStatementEnd
+                | Self::ExpectedAfter(_, _)
+                | Self::ExpectedBefore(_, _)
+                | Self::Expected(_)
+                | Self::ExpectedDeclaration => MessageKind::Error,
         }
     }
 
     fn description(&self, _context: &MessageContext<'_, MessageMarker>) -> String {
         match self {
             Self::ExpectedStatementEnd => String::from("Expected `;` after statement"),
+            Self::ExpectedAfter(a, b) => format!("Expected {} after {}", a, b),
+            Self::ExpectedBefore(a, b) => format!("Expected {} before {}", a, b),
+            Self::Expected(a) => format!("Expected {}", a),
+            Self::ExpectedDeclaration => String::from("Expected declaration"),
         }
     }
 
     fn primary_annotation(&self, _context: &MessageContext<'_, MessageMarker>) -> Option<String> {
         match self {
-            Self::ExpectedStatementEnd => Some(String::from("`;` was expected here")),
-            _ => None,
+            Self::ExpectedStatementEnd => Some(String::from("expected `;` here")),
+            Self::ExpectedAfter(a, _) => Some(format!("expected {} here", a)),
+            Self::ExpectedBefore(a, _) => Some(format!("expected {} here", a)),
+            Self::Expected(a) => Some(format!("expected {} here", a)),
+            Self::ExpectedDeclaration => Some(String::from("expected declaration here")),
         }
     }
 
@@ -109,14 +130,145 @@ impl<'source> Parser<'source> {
         let mut declarations = Vec::new();
 
         while !self.is_eof() {
-            declarations.push(self.parse_declaration(reporter));
+            declarations.push(self.parse_declaration(reporter, lexer_reporter));
         }
 
         declarations
     }
 
-    fn parse_declaration(&mut self, _reporter: &mut ParserErrorReporter) -> Decl<'source> {
-        todo!()
+    fn parse_declaration(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Decl<'source> {
+        // eprintln!("[debug] Parsing decl");
+
+        if self.matches(TokenType::Module, lexer_reporter) {
+            return self.parse_module_declaration(reporter, lexer_reporter);
+        } /* else if self.matches(TokenType::Export, lexer_reporter) {
+            return self.parse_export_declaration(reporter, lexer_reporter);
+        } else if self.matches(TokenType::Template, lexer_reporter) {
+            return self.parse_template_declaration(reporter, lexer_reporter);
+        } else if self.matches(TokenType::Include, lexer_reporter) {
+            return self.parse_include_declaration(reporter, lexer_reporter);
+        } else if self.matches(TokenType::Import, lexer_reporter) {
+            return self.parse_import_declaration(reporter, lexer_reporter);
+        } */
+
+        self.error_at_current(ParserError::ExpectedDeclaration, true, reporter);
+        let decl = Decl::Error; // self.parse_statement(reporter, lexer_reporter);
+
+        if reporter.panic_mode() {
+            // eprintln!("[debug] Synchronizing");
+            self.synchronize(reporter, lexer_reporter);
+        }
+
+        decl
+    }
+
+    fn parse_module_declaration(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Decl<'source> {
+        self.expect(TokenType::Identifier, ParserError::ExpectedAfter("name", "`module`"), reporter, lexer_reporter);
+        let name = self.previous.clone();
+
+        self.expect(TokenType::BracketLeft, ParserError::ExpectedAfter("`{`", "module name"), reporter, lexer_reporter);
+
+        let mut declarations = Vec::new();
+
+        while !self.check(TokenType::BracketRight) && !self.check(TokenType::Eof) {
+            declarations.push(self.parse_declaration(reporter, lexer_reporter));
+        }
+
+        self.expect(TokenType::BracketRight, ParserError::ExpectedAfter("`}`", "statements in module"), reporter, lexer_reporter);
+        Decl::Module { name, declarations }
+    }
+
+    fn parse_type_reference_part(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> TypeReferencePart<'source> {
+        // Assumes the first token to be consumed already
+
+        let start_pos = self.previous.start.index;
+        let mut tokens = ne_vec![self.previous.clone()];
+
+        while self.matches(TokenType::ColonColon, lexer_reporter) {
+            if tokens.last().token_type != TokenType::Identifier {
+                self.error_at(tokens.last(), ParserError::ExpectedBefore("module name", "`::`"), true, reporter);
+            }
+
+            self.expect_any(&*ALLOWED_VARIABLE_TYPES, ParserError::ExpectedAfter("type name", "`::`"), reporter, lexer_reporter);
+            tokens.push(self.current.clone());
+        }
+
+        let end_pos = tokens.last().end.index;
+        TypeReferencePart(tokens, Span::new(start_pos, end_pos))
+    }
+
+    fn parse_type_part(&mut self, previous: &'static str, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> TypePart<'source> {
+        // Expects the first token, like `:`, to be consumed already (represented by "previous")
+
+        if self.matches(TokenType::ParenthesisLeft, lexer_reporter) {
+            let (args, args_span) = if !self.check(TokenType::ParenthesisRight) {
+                let start_pos = self.current.start.index;
+                let mut args = vec![self.parse_type_part("`(`", reporter, lexer_reporter)];
+
+                while self.matches(TokenType::Comma, lexer_reporter) {
+                    args.push(self.parse_type_part("`,`", reporter, lexer_reporter));
+                }
+
+                let end_pos = self.previous.end.index;
+                self.expect(TokenType::ParenthesisRight, ParserError::ExpectedAfter("`)`", "template parameter types"), reporter, lexer_reporter);
+                (args, Span::new(start_pos, end_pos))
+            } else {
+                let start_pos = self.previous.start.index;
+                self.expect(TokenType::ParenthesisRight, ParserError::ExpectedAfter("`)`", "`(`"), reporter, lexer_reporter);
+                let end_pos = self.previous.end.index;
+
+                (Vec::new(), Span::new(start_pos, end_pos))
+            };
+
+            self.expect(TokenType::Colon, ParserError::ExpectedAfter(previous, "template parameter list"), reporter, lexer_reporter);
+            let return_type = self.parse_type_part("`:`", reporter, lexer_reporter);
+
+            TypePart::Template {
+                args,
+                return_type: Box::new(return_type),
+                args_span,
+            }
+        } else {
+            self.expect_any(&*ALLOWED_VARIABLE_TYPES, ParserError::ExpectedAfter("type name", "`:`"), reporter, lexer_reporter);
+            TypePart::Name(self.parse_type_reference_part(reporter, lexer_reporter))
+        }
+    }
+
+    fn parse_single_implements_part(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> SingleImplementsPart<'source> {
+        // Expects the first token `:` to be consumed already
+
+        let start_pos = self.current.start.index;
+        self.expect_any(&*ALLOWED_VARIABLE_TYPES, ParserError::ExpectedAfter("type name", "`:`"), reporter, lexer_reporter);
+        let name = self.parse_type_reference_part(reporter, lexer_reporter);
+
+        self.expect(TokenType::ParenthesisLeft, ParserError::ExpectedAfter("`(`", "type name"), reporter, lexer_reporter);
+
+        let (args, args_span) = /* if !self.check(TokenType::ParenthesisRight) {
+            let start_pos = self.current.start.index;
+            let mut args = vec![self.parse_expr(reporter, lexer_reporter)];
+
+            while self.matches(TokenType::Comma, lexer_reporter) {
+                args.push(self.parse_expr(reporter, lexer_reporter));
+            }
+
+            let end_pos = self.previous.end.index;
+            self.expect(TokenType::ParenthesisRight, ParserError::ExpectedAfter("`)`", "arguments"), reporter, lexer_reporter);
+            (args, Span::new(start_pos, end_pos))
+        } else */ {
+            let start_pos = self.previous.start.index;
+            self.expect(TokenType::ParenthesisRight, ParserError::ExpectedAfter("`)`", "`(`"), reporter, lexer_reporter);
+            let end_pos = self.previous.end.index;
+
+            (Vec::new(), Span::new(start_pos, end_pos))
+        };
+
+        let end_pos = self.previous.end.index;
+        SingleImplementsPart {
+            name,
+            parameters: args,
+            span: Span::new(start_pos, end_pos),
+            parameter_span: args_span,
+        }
     }
 
     fn consume(&mut self, lexer_reporter: &mut LexerErrorReporter) {
@@ -193,6 +345,7 @@ impl<'source> Parser<'source> {
 
     fn synchronize(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) {
         reporter.exit_panic_mode();
+        self.consume(lexer_reporter); // DEBUG
 
         while self.current.token_type() != TokenType::Eof {
             if self.previous.token_type() == TokenType::Semicolon {

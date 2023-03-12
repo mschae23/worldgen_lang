@@ -176,9 +176,9 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         // self.colors.reset(f)?;
 
         self.colors.message(f, message.kind)?;
-        write!(f, "{}{}{}: ", "[", message.name, "]")?;
+        write!(f, "{}{}{}", "[", message.name, "]")?;
         self.colors.description(f)?;
-        writeln!(f, "{}", &message.description)?;
+        writeln!(f, ": {}", &message.description)?;
         self.colors.reset(f)?;
 
         let mut annotations = self.collect_annotations(message);
@@ -352,6 +352,10 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
                 Some(annotation) => (current_line + 1).max(annotation.start.line),
             };
 
+            if current_line as usize > self.lines.len() {
+                break;
+            }
+
             for (i, annotation) in annotations.iter().enumerate().skip(min_index) {
                 if annotation.start.line > current_line && annotation.end.line > current_line {
                     break;
@@ -378,6 +382,12 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
                 continuing_annotations_indices.clear();
 
                 last_line = Some(current_line);
+            }
+        }
+
+        if let Some(last_line) = last_line {
+            if (last_line as usize) < self.lines.len() {
+                self.print_post_surrounding_lines(f, self.lines.len() as u32 + 1, last_line, &[], &mut already_printed_to)?;
             }
         }
 
@@ -445,23 +455,32 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         }
     }
 
+    fn print_post_surrounding_lines(&mut self, f: &mut impl WriteColor, main_line: u32, last_line: u32,
+                                    continuing_annotations: &[&AnnotationData], already_printed_to: &mut u32) -> std::io::Result<()> {
+        // writeln!(f, "[debug] potentially printing post surrounding lines, last line: {}, already printed to: {}", last_line, *already_printed_to)?;
+
+        if last_line >= *already_printed_to {
+            let first_print_line = (last_line + 1).max(*already_printed_to + 1);
+            let last_print_line = self.get_last_print_line(last_line).min(main_line - 1);
+
+            // writeln!(f, "[debug] printing post surrounding lines, last line: {}, first: {}, last: {}", last_line, first_print_line, last_print_line)?;
+
+            if last_print_line >= first_print_line {
+                for line in first_print_line..=last_print_line {
+                    self.print_single_source_line(f, line, last_line, &[], continuing_annotations)?;
+                    *already_printed_to = line;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     fn print_part_lines(&mut self, f: &mut impl WriteColor, main_line: u32, last_line: Option<u32>,
                         annotations: &[&AnnotationData], continuing_annotations: &[&AnnotationData],
                         already_printed_to: &mut u32) -> std::io::Result<()> {
         if let Some(last_line) = last_line {
-            if last_line == *already_printed_to {
-                let first_print_line = (last_line + 1).max(*already_printed_to + 1);
-                let last_print_line = self.get_last_print_line(last_line).min(main_line - 1);
-
-                // writeln!(f, "[debug] last line ({}); first = {}, last = {}", last_line, first_print_line, last_print_line)?;
-
-                if last_print_line >= first_print_line {
-                    for line in first_print_line..=last_print_line {
-                        self.print_single_source_line(f, line, last_line, &[], continuing_annotations)?;
-                        *already_printed_to = line;
-                    }
-                }
-            }
+            self.print_post_surrounding_lines(f, main_line, last_line, continuing_annotations, already_printed_to)?;
         }
 
         let first_print_line = self.get_start_print_line(main_line).max(*already_printed_to + 1);
@@ -624,7 +643,6 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         }
 
         writeln!(f)?;
-
         Ok(())
     }
 

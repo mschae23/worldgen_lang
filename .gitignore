@@ -13,3 +13,4 @@ Cargo.lock
 
 # Compiler test
 !example/**/target/
+example/**/worldgen_lang*

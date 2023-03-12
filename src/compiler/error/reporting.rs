@@ -202,6 +202,10 @@ impl<D, M> ErrorReporter<D, M> {
         }
     }
 
+    pub fn panic_mode(&self) -> bool {
+        self.panic_mode
+    }
+
     pub fn exit_panic_mode(&mut self) {
         self.panic_mode = false;
     }

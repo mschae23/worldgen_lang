@@ -3,9 +3,12 @@ use non_empty_vec::NonEmpty;
 use crate::compiler::error::span::Span;
 use crate::compiler::lexer::{Token, TokenPos};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeReferencePart<'source>(pub NonEmpty<Token<'source>>, pub Span);
+
 #[derive(Clone, PartialEq, Eq)]
 pub enum TypePart<'source> {
-    Name(NonEmpty<Token<'source>>, Span),
+    Name(TypeReferencePart<'source>),
     Template {
         args: Vec<TypePart<'source>>,
         return_type: Box<TypePart<'source>>,
@@ -16,16 +19,16 @@ pub enum TypePart<'source> {
 impl<'source> Debug for TypePart<'source> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            TypePart::Name(tokens, _) => write!(f, "{}", tokens.iter().map(|token| token.source().clone()).collect::<Vec<_>>().join("::")),
-            TypePart::Template { args, return_type, .. } => write!(f, "({}): {:?}", args.iter()
-                .map(|arg| format!("{:?}", arg)).collect::<Vec<_>>().join(", "), return_type)
+            Self::Name(tokens) => write!(f, "{}", tokens.0.iter().map(|token| token.source().clone()).collect::<Vec<_>>().join("::")),
+            Self::Template { args, return_type, .. } => write!(f, "({}): {:?}", args.iter()
+                .map(|arg| format!("{:?}", arg)).collect::<Vec<_>>().join(", "), return_type),
         }
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SingleImplementsPart<'source> {
-    pub name: Token<'source>,
+    pub name: TypeReferencePart<'source>,
     pub parameters: Vec<Expr<'source>>,
     pub span: Span, pub parameter_span: Span,
 }

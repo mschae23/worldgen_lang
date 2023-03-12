@@ -47,7 +47,7 @@ module overworld {
         "y_scale": 0.125
     };
 
-    export sloped_cheese = "4.0 *
+    export sloped_cheese = 4.0 *
         quarter_negative((depth + jaggedness * half_negative(noise("minecraft:jagged", 1500.0, 0.0))) * factor)
         + base_3d_noise;
 }
