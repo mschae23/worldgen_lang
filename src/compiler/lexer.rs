@@ -161,7 +161,7 @@ impl Message<MessageMarker> for LexerError {
         MessageKind::Error
     }
 
-    fn description(&mut self, _context: &MessageContext<'_, ()>) -> String {
+    fn description(&self, _context: &MessageContext<'_, ()>) -> String {
         match self {
             Self::UnexpectedEof => String::from("Unexpected EOF"),
             Self::UnexpectedCharacter(c) => format!("Unexpected character '{}'", c),
@@ -171,15 +171,19 @@ impl Message<MessageMarker> for LexerError {
         }
     }
 
-    fn main_inline_note(&mut self, _context: &MessageContext<'_, MessageMarker>) -> Option<String> {
+    fn primary_annotation(&self, _context: &MessageContext<'_, MessageMarker>) -> Option<String> {
         None
     }
 
-    fn additional_inline_notes(&mut self, _context: &MessageContext<'_, MessageMarker>) -> Vec<(Span, Option<String>)> {
+    fn additional_annotations(&self, _context: &MessageContext<'_, MessageMarker>) -> Vec<(Span, Option<String>)> {
         Vec::new()
     }
 
-    fn notes(&mut self, _context: &MessageContext<'_, ()>) -> Vec<(NoteKind, String)> {
+    fn primary_note(&self, _context: &MessageContext<'_, ()>) -> Option<(NoteKind, String)> {
+        None
+    }
+
+    fn additional_notes(&self, _context: &MessageContext<'_, ()>) -> Vec<(NoteKind, String)> {
         Vec::new()
     }
 }

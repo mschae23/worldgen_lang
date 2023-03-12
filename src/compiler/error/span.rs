@@ -2,7 +2,7 @@ use crate::compiler::lexer::{Token, TokenPos};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Span {
-    pub start: u32,
+    pub start: u32, // Uses byte indices
     pub end: u32,
 }
 
@@ -23,6 +23,26 @@ impl Span {
 
     pub fn end(&self) -> u32 {
         self.end
+    }
+
+    /// Combines the spans by using the start of `self` and the end of `other`.
+    pub fn mix(self, other: Self) -> Self {
+        Span {
+            start: self.start,
+            end: other.end,
+        }
+    }
+
+    pub fn merge(self, other: Self) -> Self {
+        Span {
+            start: self.start.min(other.start),
+            end: self.end.max(other.end),
+        }
+    }
+
+    pub fn overlaps(&self, other: &Self) -> bool {
+        (self.start <= other.start && self.end > other.start)
+            || (other.start <= self.start && other.end > self.start)
     }
 }
 

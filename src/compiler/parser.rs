@@ -46,26 +46,32 @@ impl Message<MessageMarker> for ParserError {
         }
     }
 
-    fn description(&mut self, _context: &MessageContext<'_, MessageMarker>) -> String {
+    fn description(&self, _context: &MessageContext<'_, MessageMarker>) -> String {
         match self {
             Self::ExpectedStatementEnd => String::from("Expected `;` after statement"),
         }
     }
 
-    fn main_inline_note(&mut self, _context: &MessageContext<'_, MessageMarker>) -> Option<String> {
+    fn primary_annotation(&self, _context: &MessageContext<'_, MessageMarker>) -> Option<String> {
         match self {
             Self::ExpectedStatementEnd => Some(String::from("`;` was expected here")),
             _ => None,
         }
     }
 
-    fn additional_inline_notes(&mut self, _context: &MessageContext<'_, MessageMarker>) -> Vec<(Span, Option<String>)> {
+    fn additional_annotations(&self, _context: &MessageContext<'_, MessageMarker>) -> Vec<(Span, Option<String>)> {
         match self {
             _ => Vec::new(),
         }
     }
 
-    fn notes(&mut self, _context: &MessageContext<'_, MessageMarker>) -> Vec<(NoteKind, String)> {
+    fn primary_note(&self, _context: &MessageContext<'_, MessageMarker>) -> Option<(NoteKind, String)> {
+        match self {
+            _ => None,
+        }
+    }
+
+    fn additional_notes(&self, _context: &MessageContext<'_, MessageMarker>) -> Vec<(NoteKind, String)> {
         match self {
             _ => Vec::new(),
         }

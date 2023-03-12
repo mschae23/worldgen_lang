@@ -23,6 +23,20 @@ pub enum NoteKind {
     Note, Help,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct Annotation {
+    span: Span,
+    label: Option<String>,
+}
+
+impl Annotation {
+    pub fn new(span: Span, label: Option<String>) -> Self {
+        Annotation {
+            span, label,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct SubmittedMessageData<M> {
     pub span: Span,
@@ -40,31 +54,34 @@ impl<M> SubmittedMessageData<M> {
 }
 
 #[derive(Clone, Debug)]
-pub struct MessageContext<'md, MD> {
+pub struct MessageContext<'d, D> {
     pub span: Span,
-    pub marker: &'md MD,
+    pub custom_data: &'d D,
 }
 
-impl<'md, MD> MessageContext<'md, MD> {
-    pub fn new(span: Span, marker: &'md MD) -> Self {
+impl<'d, D> MessageContext<'d, D> {
+    pub fn new(span: Span, marker: &'d D) -> Self {
         MessageContext {
-            span, marker,
+            span,
+            custom_data: marker,
         }
     }
 }
 
-pub trait Message<MD>: Debug {
+pub trait Message<D>: Debug {
     fn name(&self) -> &'static str;
 
     fn kind(&self) -> MessageKind;
 
-    fn description(&mut self, context: &MessageContext<'_, MD>) -> String;
+    fn description(&self, context: &MessageContext<'_, D>) -> String;
 
-    fn main_inline_note(&mut self, context: &MessageContext<'_, MD>) -> Option<String>;
+    fn primary_annotation(&self, context: &MessageContext<'_, D>) -> Option<String>;
 
-    fn additional_inline_notes(&mut self, context: &MessageContext<'_, MD>) -> Vec<(Span, Option<String>)>;
+    fn additional_annotations(&self, context: &MessageContext<'_, D>) -> Vec<(Span, Option<String>)>;
 
-    fn notes(&mut self, context: &MessageContext<'_, MD>) -> Vec<(NoteKind, String)>;
+    fn primary_note(&self, context: &MessageContext<'_, D>) -> Option<(NoteKind, String)>;
+
+    fn additional_notes(&self, context: &MessageContext<'_, D>) -> Vec<(NoteKind, String)>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,19 +91,25 @@ pub struct MessageData {
     pub name: &'static str,
     pub kind: MessageKind,
     pub description: String,
-    pub main_inline_note: Option<String>,
-    pub additional_inline_notes: Vec<(Span, Option<String>)>,
-    pub notes: Vec<(NoteKind, String)>,
+    pub primary_annotation: Option<String>,
+    pub additional_annotations: Vec<(Span, Option<String>)>,
+    pub primary_note: Option<(NoteKind, String)>,
+    pub additional_notes: Vec<(NoteKind, String)>,
     pub suppressed_messages: u32,
 }
 
 impl MessageData {
     pub fn new(span: Span, stage: CompileStage, name: &'static str, kind: MessageKind,
                description: String,
-               main_inline_note: Option<String>, additional_inline_notes: Vec<(Span, Option<String>)>,
-               notes: Vec<(NoteKind, String)>, suppressed_messages: u32) -> Self {
+               primary_annotation: Option<String>, additional_annotations: Vec<(Span, Option<String>)>,
+               primary_note: Option<(NoteKind, String)>, additional_notes: Vec<(NoteKind, String)>,
+               suppressed_messages: u32) -> Self {
         MessageData {
-            span, stage, name, kind, description, main_inline_note, additional_inline_notes, notes, suppressed_messages,
+            span, stage, name, kind, description,
+            primary_annotation,
+            additional_annotations,
+            primary_note, additional_notes,
+            suppressed_messages,
         }
     }
 }
@@ -105,28 +128,29 @@ impl<'source> ErrorReporting<'source> {
         }
     }
 
-    pub fn create_for_stage<MD, M>(&self, stage: CompileStage, marker: MD) -> ErrorReporter<MD, M> {
+    pub fn create_for_stage<D, M>(&self, stage: CompileStage, marker: D) -> ErrorReporter<D, M> {
         ErrorReporter::new(stage, marker)
     }
 
-    pub fn submit<MD: Default, M: Message<MD>>(&mut self, mut reporter: ErrorReporter<MD, M>) {
+    pub fn submit<D: Default, M: Message<D>>(&mut self, mut reporter: ErrorReporter<D, M>) {
         let stage = reporter.stage;
-        let marker = std::mem::take(&mut reporter.marker);
+        let marker = std::mem::take(&mut reporter.custom_data);
         let messages = std::mem::take(&mut reporter.messages);
         drop(reporter);
 
-        self.messages.extend(messages.into_iter().map(|mut message| {
+        self.messages.extend(messages.into_iter().map(|message| {
             let context = MessageContext::new(message.span, &marker);
 
             let name: &'static str = message.message.name();
             let kind = message.message.kind();
             let description = message.message.description(&context);
-            let main_inline_note = message.message.main_inline_note(&context);
-            let additional_inline_notes = message.message.additional_inline_notes(&context);
-            let notes = message.message.notes(&context);
+            let primary_annotation = message.message.primary_annotation(&context);
+            let additional_annotations = message.message.additional_annotations(&context);
+            let primary_note = message.message.primary_note(&context);
+            let additional_notes = message.message.additional_notes(&context);
 
             MessageData::new(message.span, stage, name, kind, description,
-                main_inline_note, additional_inline_notes, notes, message.suppressed_messages.len() as u32)
+                primary_annotation, additional_annotations, primary_note, additional_notes, message.suppressed_messages.len() as u32)
         }));
     }
 
@@ -136,33 +160,33 @@ impl<'source> ErrorReporting<'source> {
 
     pub fn print_simple(&mut self) {
         let mut renderer = render::TerminalErrorRenderer::new(Rc::clone(&self.config), Rc::clone(&self.path), ColorConfig::ColoredDefault, &self.source, &self.messages);
-        renderer.render();
+        renderer.render_to_stderr();
     }
 }
 
-pub struct ErrorReporter<MD, M> {
+pub struct ErrorReporter<D, M> {
     stage: CompileStage,
-    pub marker: MD,
+    pub custom_data: D,
     messages: Vec<SubmittedMessageData<M>>,
     panic_mode: bool,
 }
 
-impl<MD, M> ErrorReporter<MD, M> {
-    fn new(stage: CompileStage, marker: MD) -> Self {
+impl<D, M> ErrorReporter<D, M> {
+    fn new(stage: CompileStage, marker: D) -> Self {
         ErrorReporter {
             stage,
-            marker,
+            custom_data: marker,
             messages: Vec::new(),
             panic_mode: false,
         }
     }
 
-    pub fn marker(&self) -> &MD {
-        &self.marker
+    pub fn custom_data(&self) -> &D {
+        &self.custom_data
     }
 
-    pub fn marker_mut(&mut self) -> &mut MD {
-        &mut self.marker
+    pub fn custom_data_mut(&mut self) -> &mut D {
+        &mut self.custom_data
     }
 
     pub fn report(&mut self, span: Span, message: M, panic: bool) { // panic is unrelated to a Rust "panic!"

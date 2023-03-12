@@ -28,16 +28,91 @@ impl ColorConfig {
         }
     }
 
+    pub fn message(&self, string: &str, kind: MessageKind) -> colored::ColoredString {
+        match kind {
+            MessageKind::Error => self.error(string),
+            MessageKind::Warning => self.warning(string),
+        }
+    }
+
     pub fn description(&self, string: &str) -> colored::ColoredString {
         match self {
             ColorConfig::Uncolored => colored::ColoredString::from(string),
             ColorConfig::ColoredDefault => string.bold(),
         }
     }
+
+    pub fn line_number(&self, string: &str) -> colored::ColoredString {
+        match self {
+            ColorConfig::Uncolored => colored::ColoredString::from(string),
+            ColorConfig::ColoredDefault => string.bright_blue().bold(),
+        }
+    }
+
+    pub fn line_number_separator(&self, string: &str) -> colored::ColoredString {
+        match self {
+            ColorConfig::Uncolored => colored::ColoredString::from(string),
+            ColorConfig::ColoredDefault => string.bright_blue(),
+        }
+    }
+
+    pub fn additional_annotation(&self, string: &str) -> colored::ColoredString {
+        match self {
+            ColorConfig::Uncolored => colored::ColoredString::from(string),
+            ColorConfig::ColoredDefault => string.bright_blue(),
+        }
+    }
+
+    pub fn annotation(&self, string: &str, annotation: &AnnotationData) -> colored::ColoredString {
+        if annotation.primary {
+            self.message(string, annotation.message_kind)
+        } else {
+            self.additional_annotation(string)
+        }
+    }
+
+    pub fn source(&self, string: &str) -> colored::ColoredString {
+        colored::ColoredString::from(string)
+    }
 }
 
-pub trait ErrorRenderer {
-    fn render(config: Rc<Config>, path: Rc<PathBuf>, color_config: ColorConfig, source: &str, messages: &[MessageData]);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineColumn {
+    pub line: u32,
+    pub column: u32,
+}
+
+impl LineColumn {
+    pub fn new(line: u32, column: u32) -> Self {
+        LineColumn {
+            line, column,
+        }
+    }
+
+    pub fn from_usize_lossy(line_col: (usize, usize)) -> Self {
+        Self::new(line_col.0 as u32, line_col.1 as u32)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AnnotationDisplayData {
+    Singleline {
+        rightmost_index: u32, // Index of this annotation of all singleline ones on this line, from the right
+        vertical_offset: u32, // How many annotations for this line have to be displayed before this one
+    },
+    Multiline {
+        continuing_bar_index: u32, // What position the `|` to the left of the source code is at
+        vertical_offset: u32, // How many annotations for the end line have to be displayed before this one
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnnotationData {
+    span: Span,
+    message_kind: MessageKind, primary: bool, // error / warning (for colors), primary (for color and underline char)
+    label: Option<String>,
+    start: LineColumn, end: LineColumn,
+    display_data: AnnotationDisplayData,
 }
 
 pub struct TerminalErrorRenderer<'source, 'm> {
@@ -45,6 +120,10 @@ pub struct TerminalErrorRenderer<'source, 'm> {
     lines: Vec<&'source str>,
     line_col_lookup: LineColLookup<'source>,
     messages: &'m [MessageData],
+
+    current_message: Option<&'m MessageData>,
+    annotations: Vec<AnnotationData>,
+    max_nested_blocks: usize, line_digits: u32,
 }
 
 impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
@@ -52,21 +131,32 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         TerminalErrorRenderer {
             config, path,
             colors: color_config, lines: source.lines().collect(), line_col_lookup: LineColLookup::new(source), messages,
+            current_message: None, annotations: Vec::new(),
+            max_nested_blocks: 0, line_digits: 0,
         }
     }
 
-    pub fn render(&mut self) {
+    pub fn render_to_stderr(&mut self) {
         if self.messages.is_empty() {
             return;
         }
 
+        eprint!("{}", self.render_to_string());
+    }
+
+    pub fn render_to_string(&mut self) -> String {
+        if self.messages.is_empty() {
+            return String::new();
+        }
+
         let mut buf = String::new();
         self.render_impl(&mut buf).expect("Failed to render error messages");
-        eprint!("{}", buf);
+        buf
     }
 
     fn render_impl(&mut self, f: &mut impl Write) -> std::fmt::Result {
         for (i, message) in self.messages.iter().enumerate() {
+            self.current_message = Some(message);
             self.print_message(f, message)?;
 
             if i < self.messages.len() - 1 {
@@ -78,150 +168,167 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
     }
 
     fn print_message(&mut self, f: &mut impl Write, message: &MessageData) -> std::fmt::Result {
-        write!(f, "{}", match message.kind {
-            MessageKind::Error => self.colors.error("error"),
-            MessageKind::Warning => self.colors.warning("warning"),
-        })?;
+        write!(f, "{}", self.colors.message(match message.kind {
+            MessageKind::Error => "error",
+            MessageKind::Warning => "warning",
+        }, message.kind))?;
 
-        write!(f, "{}{}{}: ", self.colors.error("["), self.colors.error(message.name), self.colors.error("]"))?;
+        write!(f, "{}{}{}: ", self.colors.message("[", message.kind), self.colors.message(message.name, message.kind), self.colors.message("]", message.kind))?;
         writeln!(f, "{}", self.colors.description(&message.description))?;
 
-        let mut notes = message.additional_inline_notes.clone();
-        notes.sort_unstable_by(|(a, _), (b, _)| a.start.cmp(&b.start));
+        self.collect_annotations(message);
+        self.annotations.sort_by(|a, b| a.start.line.cmp(&b.start.line));
 
-        let main_note_index = match notes.binary_search_by(|(a, _)| a.start.cmp(&message.span.start)) {
-            Ok(pos) => pos, // element already in notes, at pos
-            Err(pos) => {
-                notes.insert(pos, (message.span, message.main_inline_note.clone()));
-                pos
-            },
-        };
-
-        Self::print_source_block_with_notes(f, Rc::clone(&self.config), Rc::clone(&self.path), &self.lines, &mut self.line_col_lookup, notes, main_note_index)?;
+        self.print_source_block_with_notes(f)?;
 
         if message.suppressed_messages > 0 {
             writeln!(f, "... and {} more", message.suppressed_messages)?;
         }
 
+        self.annotations.clear();
+        self.max_nested_blocks = 0;
+        self.line_digits = 0;
+
         Ok(())
     }
 
-    fn print_source_block_with_notes(f: &mut impl Write, config: Rc<Config>, path: Rc<PathBuf>,
-                                     lines: &[&'source str], line_col_lookup: &mut LineColLookup<'source>,
-                                     notes: Vec<(Span, Option<String>)>, main_note_index: usize) -> std::fmt::Result {
-        let mut notes: Vec<_> = notes.into_iter()
-            .map(|(span, note)|
-                ((line_col_lookup.get(span.start as usize), line_col_lookup.get(span.end as usize)), note))
-            .collect();
+    fn collect_annotations(&mut self, message: &MessageData) {
+        self.add_initial_annotation(message.kind, true, message.span, message.primary_annotation.clone());
 
-        let max_nested_blocks = {
+        for (span, label) in message.additional_annotations.iter() {
+            self.add_initial_annotation(message.kind, false, *span, label.clone());
+        }
+    }
+
+    fn add_initial_annotation(&mut self, message_kind: MessageKind, primary: bool, span: Span, label: Option<String>) {
+        let start = LineColumn::from_usize_lossy(self.line_col_lookup.get(span.start as usize));
+        let end = LineColumn::from_usize_lossy(self.line_col_lookup.get(span.end as usize));
+
+        self.annotations.push(AnnotationData {
+            span,
+            message_kind,
+            primary,
+            label,
+            start,
+            end,
+            display_data: if start.line == end.line {
+                AnnotationDisplayData::Singleline {
+                    rightmost_index: 0,
+                    vertical_offset: 0,
+                }
+            } else {
+                AnnotationDisplayData::Multiline {
+                    continuing_bar_index: 0,
+                    vertical_offset: 0,
+                }
+            },
+        });
+    }
+
+    fn print_source_block_with_notes(&mut self, f: &mut impl Write) -> std::fmt::Result {
+        {
             let mut max_nested_blocks = 0;
             let mut current_nested_blocks = Vec::new();
 
-            for (((start_line, _), (end_line, _)), _) in notes.iter() {
-                if start_line == end_line {
+            for annotation in self.annotations.iter() {
+                if annotation.start.line == annotation.end.line {
                     continue;
                 }
 
-                current_nested_blocks.retain(|end| end >= start_line);
-                current_nested_blocks.push(*end_line);
+                current_nested_blocks.retain(|end| *end >= annotation.start.line);
+                current_nested_blocks.push(annotation.end.line);
                 max_nested_blocks = max_nested_blocks.max(current_nested_blocks.len());
             }
 
-            max_nested_blocks
-        };
+            self.max_nested_blocks = max_nested_blocks;
+        }
 
-        let last_note_line = notes.last()
-            .map(|((_, (end_line, _)), _)| *end_line).expect("Error contains no notes") as u32;
+        let last_note_line = self.annotations.last()
+            .map(|annotation| annotation.end.line).expect("Error contains no annotations") as u32;
 
-        let last_print_line = (last_note_line).min(lines.len() as u32);
+        let last_print_line = (last_note_line + self.config.error_surrounding_lines).min(self.lines.len() as u32);
 
-        let line_digits = last_print_line.ilog10() + 1;
-        let empty_line_number = " ".repeat(line_digits as usize);
+        self.line_digits = last_print_line.ilog10() + 1;
+        let empty_line_number = " ".repeat(self.line_digits as usize);
 
-        let main_note = &notes[main_note_index].0.0;
-        writeln!(f, "{}{} {}:{}:{}", &empty_line_number, "-->".bright_blue(), path.display(), main_note.0, main_note.1)?;
+        let primary_annotation = self.annotations.iter().find(|annotation| annotation.primary).expect("Error contains no primary annotation");
+        writeln!(f, "{}{} {}:{}:{}", &empty_line_number, "-->".bright_blue(), self.path.display(), primary_annotation.start.line, primary_annotation.start.column)?;
 
-        notes.reverse(); // First span is now the last element, and vice versa
-        let main_note_index = notes.len() - 1 - main_note_index;
+        self.annotations.reverse(); // First span is now the last element, and vice versa
 
         {
             let mut current_line = None;
             let mut already_printed_to_line = 0;
-            let mut notes_from_current_line = Vec::new();
+            let mut annotations_from_current_line = Vec::new();
             let mut continuing_notes = Vec::new();
 
-            while let Some((((start_line, start_column), (end_line, end_column)), note)) = notes.pop() {
-                if current_line.as_ref().map(|(current_line, _)| start_line > *current_line).unwrap_or(false) {
-                    // notes.last() begins on the next line
-                    // Ignore notes.last() and print current_line
+            for (i, annotation) in self.annotations.iter().enumerate().rev() {
+                if current_line.as_ref().map(|(current_line, _)| annotation.start.line > *current_line).unwrap_or(false) {
+                    // next annotation begins on the next line
+                    // Ignore annotation and print current_line
 
                     let line = current_line.take().expect("Current line number doesn't exist (this shouldn't have happened)").0 as u32;
-                    Self::print_part_lines(f, Rc::clone(&config), line, Some(start_line as u32),
-                        &mut notes_from_current_line, &mut continuing_notes,
-                        max_nested_blocks, line_digits, lines, &mut already_printed_to_line)?;
+                    self.print_part_lines(f, line, Some(annotation.start.line as u32),
+                        &mut annotations_from_current_line, &mut continuing_notes, &mut already_printed_to_line)?;
                 }
 
                 if current_line.is_none() {
-                    current_line = Some((start_line, end_line));
+                    current_line = Some((annotation.start.line, annotation.end.line));
                 }
 
-                let main = notes.len() == main_note_index;
-
-                let pos = notes_from_current_line.binary_search_by(|(_, _, ((_, start_column_2), _))| start_column_2.cmp(&(start_column as u32)).reverse()).unwrap_or_else(|e| e);
-                notes_from_current_line.insert(pos, (main, note, ((start_line as u32, start_column as u32), (end_line as u32, end_column as u32))));
+                let pos = annotations_from_current_line.binary_search_by(|a| self.annotations[*a].start.column.cmp(&(annotation.start.column as u32)).reverse()).unwrap_or_else(|e| e);
+                annotations_from_current_line.insert(pos, i);
             }
 
             if let Some((line, to_line)) = current_line.take() {
                 let line = line as u32;
-                let to_line = (to_line.min(lines.len())) as u32;
+                let to_line = ((to_line as usize).min(self.lines.len())) as u32;
 
-                Self::print_part_lines(f, Rc::clone(&config), line, None,
-                    &mut notes_from_current_line, &mut continuing_notes,
-                    max_nested_blocks, line_digits, lines, &mut already_printed_to_line)?;
+                self.print_part_lines(f, line, None,
+                    &mut annotations_from_current_line, &mut continuing_notes,
+                    &mut already_printed_to_line)?;
 
-                Self::print_part_lines(f, Rc::clone(&config), to_line, None,
-                    &mut notes_from_current_line, &mut continuing_notes,
-                    max_nested_blocks, line_digits, lines, &mut already_printed_to_line)?;
+                self.print_part_lines(f, to_line, None,
+                    &mut annotations_from_current_line, &mut continuing_notes,
+                    &mut already_printed_to_line)?;
             }
         }
 
         Ok(())
     }
 
-    fn print_part_lines(f: &mut impl Write, config: Rc<Config>, line: u32, next_start_line: Option<u32>,
-                        notes_from_current_line: &mut Vec<(bool, Option<String>, ((u32, u32), (u32, u32)))>,
-                        continuing_notes: &mut Vec<(bool, Option<String>, (u32, u32))>,
-                        max_nested_blocks: usize,
-                        line_digits: u32, lines: &[&'source str], already_printed_to_line: &mut u32) -> std::fmt::Result {
-        let first_print_line = if config.error_surrounding_lines > line - 1 { 1 } else { line - config.error_surrounding_lines }
+    fn print_part_lines(&mut self, f: &mut impl Write, line: u32, next_start_line: Option<u32>,
+                        annotations_from_current_line: &mut Vec<usize>,
+                        continuing_annotations: &mut Vec<usize>,
+                        already_printed_to_line: &mut u32) -> std::fmt::Result {
+        let first_print_line = if self.config.error_surrounding_lines > line - 1 { 1 } else { line - self.config.error_surrounding_lines }
             .max(*already_printed_to_line + 1);
 
         if first_print_line > *already_printed_to_line + 1 {
-            write!(f, "{:>fill$} {} ", "", "|".bright_blue(), fill = line_digits as usize)?;
+            write!(f, "{:>fill$} {} ", "", self.colors.line_number_separator("|"), fill = self.line_digits as usize)?;
 
-            for (main, _, _) in continuing_notes.iter() {
-                write!(f, "{} ", if *main { "|".red() } else { "|".bright_blue() })?;
+            for annotation in continuing_annotations.iter().map(|i| &self.annotations[*i]) {
+                write!(f, "{} ", self.colors.annotation("|", annotation))?;
             }
 
-            writeln!(f, "{}...", " ".repeat(2 * (max_nested_blocks - continuing_notes.len())))?;
+            writeln!(f, "{}...", " ".repeat(2 * (self.max_nested_blocks - continuing_annotations.len())))?;
         }
 
         for print_line in first_print_line..line {
-            Self::print_single_source_line(f, Rc::clone(&config), print_line, line, notes_from_current_line, continuing_notes, max_nested_blocks, line_digits, lines, lines[print_line as usize - 1])?;
+            self.print_single_source_line(f, print_line, line, annotations_from_current_line, continuing_annotations, &self.lines[print_line as usize - 1])?;
         }
 
-        Self::print_single_source_line(f, Rc::clone(&config), line, line, notes_from_current_line, continuing_notes, max_nested_blocks, line_digits, lines, lines[line as usize - 1])?;
+        self.print_single_source_line(f, line, line, annotations_from_current_line, continuing_annotations, &self.lines[line as usize - 1])?;
         *already_printed_to_line = line;
 
-        if line as usize + 1 <= lines.len() {
-            for print_line in line + 1..=line + config.error_surrounding_lines {
-                if print_line as usize > lines.len()
+        if line as usize + 1 <= self.lines.len() {
+            for print_line in line + 1..=line + self.config.error_surrounding_lines {
+                if print_line as usize > self.lines.len()
                     || next_start_line.as_ref().map(|next_start_line| print_line > *next_start_line).unwrap_or(false) {
                     break;
                 }
 
-                Self::print_single_source_line(f, Rc::clone(&config), print_line, line, notes_from_current_line, continuing_notes, max_nested_blocks, line_digits, lines, lines[print_line as usize - 1])?;
+                self.print_single_source_line(f, print_line, line, annotations_from_current_line, continuing_annotations, &self.lines[print_line as usize - 1])?;
                 *already_printed_to_line = print_line;
             }
         }
@@ -229,62 +336,62 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         Ok(())
     }
 
-    fn print_single_source_line(f: &mut impl Write, _config: Rc<Config>, line: u32, main_line: u32,
-                                notes_from_current_line: &mut Vec<(bool, Option<String>, ((u32, u32), (u32, u32)))>,
-                                continuing_notes: &mut Vec<(bool, Option<String>, (u32, u32))>,
-                                max_nested_blocks: usize,
-                                line_digits: u32, lines: &[&'source str], line_str: &str) -> std::fmt::Result {
-        write!(f, "{:>fill$} {} ", line.to_string().bright_blue().bold(), "|".bright_blue(), fill = line_digits as usize)?;
+    fn print_single_source_line(&mut self, f: &mut impl Write, line: u32, main_line: u32,
+                                annotations_from_current_line: &mut Vec<usize>,
+                                continuing_annotations: &mut Vec<usize>,
+                                line_str: &str) -> std::fmt::Result {
+        write!(f, "{:>fill$} {} ", self.colors.line_number(&line.to_string()), self.colors.line_number_separator("|"), fill = self.line_digits as usize)?;
 
-        for (main, _, _) in continuing_notes.iter() {
-            write!(f, "{} ", if *main { "|".red() } else { "|".bright_blue() })?;
+        for annotation in continuing_annotations.iter().map(|i| &self.annotations[*i]) {
+            write!(f, "{} ", self.colors.annotation("|", annotation))?;
         }
 
-        write!(f, "{}", " ".repeat(2 * (max_nested_blocks - continuing_notes.len())))?;
-        writeln!(f, "{}", line_str)?;
+        write!(f, "{}", " ".repeat(2 * (self.max_nested_blocks - continuing_annotations.len())))?;
+        writeln!(f, "{}", self.colors.source(line_str))?;
 
         let mut done_note_indices = Vec::new();
 
-        for (i, (main, label, ((start_line, start_column), (_, end_column)))) in notes_from_current_line.iter().filter(|(_, _, (start, end))| start.0 == end.0).enumerate() {
-            if *start_line > line {
+        for (i, annotation) in annotations_from_current_line.iter().map(|i| &self.annotations[*i])
+            .filter(|annotation| annotation.start.line == annotation.end.line).enumerate() {
+            if annotation.start.line > line {
                 continue;
             }
 
-            write!(f, "{:>fill$} {} ", "", "|".bright_blue(), fill = line_digits as usize)?;
+            write!(f, "{:>fill$} {} ", "", self.colors.line_number_separator("|"), fill = self.line_digits as usize)?;
 
-            for (main2, _, _) in continuing_notes.iter() {
-                write!(f, "{} ", if *main2 { "|".red() } else { "|".bright_blue() })?;
+            for annotation2 in continuing_annotations.iter().map(|i| &self.annotations[*i]) {
+                write!(f, "{} ", self.colors.annotation("|", annotation2))?;
             }
 
-            write!(f, "{}", " ".repeat(2 * (max_nested_blocks - continuing_notes.len())))?;
-            write!(f, "{}", " ".repeat(*start_column as usize - 1))?;
+            write!(f, "{}", " ".repeat(2 * (self.max_nested_blocks - continuing_annotations.len())))?;
+            write!(f, "{}", " ".repeat(annotation.start.column as usize - 1))?;
 
-            let annotation = if *main { "^" } else { "-" }.repeat(*end_column as usize - *start_column as usize);
-            write!(f, "{}", if *main { annotation.red() } else { annotation.bright_blue() })?;
+            let annotation_underline = if annotation.primary { "^" } else { "-" }.repeat(annotation.end.column as usize - annotation.start.column as usize);
+            write!(f, "{}", self.colors.annotation(&annotation_underline, annotation))?;
 
-            if let Some(label) = label {
+            if let Some(label) = annotation.label.as_ref() {
                 if i == 0 { // The note with the rightmost start column
-                    writeln!(f, " {}", if *main { label.red() } else { label.bright_blue() })?;
+                    writeln!(f, " {}", self.colors.annotation(label, annotation))?;
                 } else {
                     writeln!(f)?;
 
-                    write!(f, "{:>fill$} {} ", "", "|".bright_blue(), fill = line_digits as usize)?;
+                    write!(f, "{:>fill$} {} ", "", self.colors.line_number_separator("|"), fill = self.line_digits as usize)?;
 
-                    for (main2, _, _) in continuing_notes.iter() {
-                        write!(f, "{} ", if *main2 { "|".red() } else { "|".bright_blue() })?;
+                    for annotation2 in continuing_annotations.iter().map(|i| &self.annotations[*i]) {
+                        write!(f, "{} ", self.colors.annotation("|", annotation2))?;
                     }
 
-                    write!(f, "{}", " ".repeat(2 * (max_nested_blocks - continuing_notes.len())))?;
-                    writeln!(f, "{}{}", " ".repeat(*start_column as usize - 1), if *main { "|".red() } else { "|".bright_blue() })?;
+                    write!(f, "{}", " ".repeat(2 * (self.max_nested_blocks - continuing_annotations.len())))?;
+                    writeln!(f, "{}{}", " ".repeat(annotation.start.column as usize - 1), self.colors.annotation("|", annotation))?;
 
-                    write!(f, "{:>fill$} {} ", "", "|".bright_blue(), fill = line_digits as usize)?;
+                    write!(f, "{:>fill$} {} ", "", self.colors.line_number_separator("|"), fill = self.line_digits as usize)?;
 
-                    for (main2, _, _) in continuing_notes.iter() {
-                        write!(f, "{} ", if *main2 { "|".red() } else { "|".bright_blue() })?;
+                    for annotation2 in continuing_annotations.iter().map(|i| &self.annotations[*i]) {
+                        write!(f, "{} ", self.colors.annotation("|", annotation2))?;
                     }
 
-                    write!(f, "{}", " ".repeat(2 * (max_nested_blocks - continuing_notes.len())))?;
-                    writeln!(f, "{} {}", " ".repeat(*start_column as usize - 1), if *main { label.red() } else { label.bright_blue() })?;
+                    write!(f, "{}", " ".repeat(2 * (self.max_nested_blocks - continuing_annotations.len())))?;
+                    writeln!(f, "{} {}", " ".repeat(annotation.start.column as usize - 1), self.colors.annotation(label, annotation))?;
                 }
             } else {
                 writeln!(f)?;
@@ -294,40 +401,39 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         }
 
         for (i, index) in done_note_indices.into_iter().enumerate() {
-            notes_from_current_line.remove(index - i);
+            annotations_from_current_line.remove(index - i);
         }
 
         let mut done_note_indices = Vec::new();
 
-        for (i, (main, label, (end_line, end_column))) in continuing_notes.iter().enumerate() {
+        for (i, annotation) in continuing_annotations.iter().map(|i| &self.annotations[*i]).enumerate() {
             // writeln!(f, "[debug] continuing note end (line {} (at {}, main line: {}) of {})", end_line, line, main_line, lines.len())?;
 
-            if *end_line > line && (*end_line as usize <= lines.len() || line as usize != lines.len()) {
+            if annotation.end.line > line && (annotation.end.line as usize <= self.lines.len() || line as usize != self.lines.len()) {
                 continue;
             }
 
-            if !(*end_line as usize > lines.len() && line as usize == lines.len()) {
-                assert_eq!(line, *end_line);
+            if !(annotation.end.line as usize > self.lines.len() && line as usize == self.lines.len()) {
+                assert_eq!(line, annotation.end.line);
             }
 
-            write!(f, "{:>fill$} {} ", "", "|".bright_blue(), fill = line_digits as usize)?;
+            write!(f, "{:>fill$} {} ", "", self.colors.line_number_separator("|"), fill = self.line_digits as usize)?;
 
-            for (j, (main2, _, _)) in continuing_notes.iter().enumerate() {
+            for (j, annotation2) in continuing_annotations.iter().map(|i| &self.annotations[*i]).enumerate() {
                 if j >= i {
                     break;
                 }
 
-                write!(f, "{} ", if *main2 { "|".red() } else { "|".bright_blue() })?;
+                write!(f, "{} ", self.colors.annotation("|", annotation2))?;
             }
 
-            write!(f, "{}", if *main { "|".red() } else { "|".bright_blue() })?;
-            let underscores = "_".repeat(2 * (max_nested_blocks - continuing_notes.len() - i) + *end_column as usize /* - 1 + 1 */);
+            write!(f, "{}", self.colors.annotation("|", annotation))?;
+            let underscores = "_".repeat(2 * (self.max_nested_blocks - continuing_annotations.len() - i) + annotation.end.column as usize /* - 1 + 1 */);
 
-            write!(f, "{}{}", if *main { underscores.red() } else { underscores.bright_blue() },
-                if *main { "^".red() } else { "-".bright_blue() })?;
+            write!(f, "{}{}", self.colors.annotation(&underscores, annotation), self.colors.annotation(if annotation.primary { "^" } else { "-" }, annotation))?;
 
-            if let Some(label) = label {
-                writeln!(f, " {}", if *main { label.red() } else { label.bright_blue() })?;
+            if let Some(label) = annotation.label.as_ref() {
+                writeln!(f, " {}", self.colors.annotation(label, annotation))?;
             } else {
                 writeln!(f, )?;
             }
@@ -336,40 +442,32 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         }
 
         for (i, index) in done_note_indices.into_iter().enumerate() {
-            continuing_notes.remove(index - i);
+            continuing_annotations.remove(index - i);
         }
 
-        for (main, _, ((start_line, start_column), _)) in notes_from_current_line.iter().filter(|(_, _, (start, end))| start.0 < end.0) {
-            if *start_line > line {
+        for annotation in annotations_from_current_line.iter().map(|i| &self.annotations[*i])
+            .filter(|annotation| annotation.start.line < annotation.end.line) {
+            if annotation.start.line > line {
                 continue;
             }
 
-            write!(f, "{:>fill$} {} ", "", "|".bright_blue(), fill = line_digits as usize)?;
+            write!(f, "{:>fill$} {} ", "", self.colors.line_number_separator("|"), fill = self.line_digits as usize)?;
 
-            for (main2, _, _) in continuing_notes.iter() {
-                write!(f, "{} ", if *main2 { "|".red() } else { "|".bright_blue() })?;
+            for annotation2 in continuing_annotations.iter().map(|i| &self.annotations[*i]) {
+                write!(f, "{} ", self.colors.annotation("|", annotation2))?;
             }
 
             write!(f, " ")?;
-            let underscores = "_".repeat(*start_column as usize /* - 1 + 1 */);
+            let underscores = "_".repeat(annotation.start.column as usize /* - 1 + 1 */);
 
-            writeln!(f, "{}{}", if *main { underscores.red() } else { underscores.bright_blue() },
-                if *main { "^".red() } else { "-".bright_blue() })?;
+            writeln!(f, "{}{}", self.colors.annotation(&underscores, annotation), self.colors.annotation(if annotation.primary { "^" } else { "-" }, annotation))?;
         }
 
         if line == main_line {
-            continuing_notes.extend(notes_from_current_line.drain(0..notes_from_current_line.len())
-                .map(|(main, label, (_, end))| (main, label, end)));
-            notes_from_current_line.clear();
+            continuing_annotations.extend(annotations_from_current_line.drain(0..annotations_from_current_line.len()));
+            annotations_from_current_line.clear();
         }
 
         Ok(())
-    }
-}
-
-impl<'source, 'm> ErrorRenderer for TerminalErrorRenderer<'source, 'm> {
-    fn render(config: Rc<Config>, path: Rc<PathBuf>, color_config: ColorConfig, source: & str, messages: &[MessageData]) {
-        let mut renderer = TerminalErrorRenderer::new(config, path, color_config, source, messages);
-        renderer.render();
     }
 }
