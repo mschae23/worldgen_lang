@@ -267,14 +267,14 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
     fn calculate_annotation_data(&mut self, annotations: &mut Vec<AnnotationData>) {
         let mut max_nested_blocks = 0;
         let mut current_nested_blocks: Vec<&mut AnnotationData> = Vec::new();
-        let mut last_line = 0;
+        let mut current_line = 0;
         let mut next_rightmost_index = 0;
 
         for annotation in annotations.iter_mut() {
             match &mut annotation.display_data {
                 AnnotationDisplayData::Singleline { rightmost_index, vertical_offset } => {
-                    if annotation.start.line > last_line {
-                        last_line = annotation.start.line;
+                    if annotation.start.line > current_line {
+                        current_line = annotation.start.line;
                         next_rightmost_index = 0;
                     }
 
@@ -285,8 +285,8 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
                 AnnotationDisplayData::Multiline { start_rightmost_index, start_vertical_offset, continuing_bar_index, end_rightmost_index: _, end_vertical_offset: _ } => {
                     for a in current_nested_blocks.iter_mut() {
                         if a.end.line < annotation.start.line {
-                            if a.end.line > last_line {
-                                last_line = a.end.line;
+                            if a.end.line > current_line {
+                                current_line = a.end.line;
                                 next_rightmost_index = 0;
                             }
 
@@ -301,8 +301,8 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
                         }
                     }
 
-                    if annotation.start.line > last_line {
-                        last_line = annotation.start.line;
+                    if annotation.start.line > current_line {
+                        current_line = annotation.start.line;
                         next_rightmost_index = 0;
                     }
 
@@ -320,8 +320,8 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         }
 
         for a in current_nested_blocks.iter_mut() {
-            if a.end.line > last_line {
-                last_line = a.end.line;
+            if a.end.line > current_line {
+                current_line = a.end.line;
                 next_rightmost_index = 0;
             }
 
@@ -338,10 +338,10 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         self.max_nested_blocks = max_nested_blocks;
     }
 
-    fn print_lines_with_annotations(&mut self, f: &mut impl WriteColor, annotations: Vec<AnnotationData>) -> std::io::Result<()> {
+    fn print_lines_with_annotations(&mut self, f: &mut impl WriteColor, mut annotations: Vec<AnnotationData>) -> std::io::Result<()> {
         let mut already_printed_to = 0;
-        let mut annotations_on_line = Vec::new();
-        let mut continuing_annotations = Vec::new();
+        let mut annotations_on_line_indices = Vec::new();
+        let mut continuing_annotations_indices = Vec::new();
         let mut current_line = 0;
         let mut last_line = None;
         let mut min_index = 0;
@@ -361,22 +361,88 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
                 }
 
                 if annotation.start.line == current_line || annotation.end.line == current_line {
-                    annotations_on_line.push(annotation);
+                    annotations_on_line_indices.push(i);
                 } else if annotation.start.line < current_line && annotation.end.line >= current_line {
-                    continuing_annotations.push(annotation);
+                    continuing_annotations_indices.push(i);
                 }
             }
 
-            if current_line != 0 && !annotations_on_line.is_empty() {
-                self.print_part_lines(f, current_line, last_line, &annotations_on_line, &continuing_annotations, &mut already_printed_to)?;
-                annotations_on_line.clear();
-                continuing_annotations.clear();
+            if current_line != 0 && !annotations_on_line_indices.is_empty() {
+                self.fix_connecting_annotations(current_line, &mut annotations, &annotations_on_line_indices);
+
+                self.print_part_lines(f, current_line, last_line,
+                    &annotations_on_line_indices.iter().map(|i| &annotations[*i]).collect::<Vec<_>>(),
+                    &continuing_annotations_indices.iter().map(|i| &annotations[*i]).collect::<Vec<_>>(),
+                    &mut already_printed_to)?;
+                annotations_on_line_indices.clear();
+                continuing_annotations_indices.clear();
 
                 last_line = Some(current_line);
             }
         }
 
         Ok(())
+    }
+
+    fn fix_connecting_annotations(&mut self, line: u32, annotations: &mut Vec<AnnotationData>, indices: &[usize]) {
+        if indices.len() <= 1 {
+            return;
+        }
+
+        let mut side = Vec::with_capacity(indices.len());
+        let mut should_fix = false;
+
+        for i in indices.iter() {
+            let annotation = &annotations[*i];
+            // eprintln!("[debug] fix collect; index: {} / {}", i, indices.len());
+
+            let side = if annotation.start.line == line {
+                side.push(false);
+                false
+            } else if annotation.end.line == line {
+                side.push(true);
+                true
+            } else {
+                panic!("Annotation does not start or end on this line")
+            };
+
+            match &annotation.display_data {
+                AnnotationDisplayData::Singleline { .. } => {},
+                AnnotationDisplayData::Multiline { start_rightmost_index, start_vertical_offset, end_rightmost_index, end_vertical_offset, .. } => {
+                    if side {
+                        if *end_rightmost_index == 0 && *end_vertical_offset == 0 {
+                            should_fix = true;
+                        }
+                    } else {
+                        if *start_rightmost_index == 0 && *start_vertical_offset == 0 {
+                            should_fix = true;
+                        }
+                    }
+                },
+            }
+        }
+
+        if should_fix {
+            for (i, index) in indices.iter().enumerate() {
+                // eprintln!("[debug] fix process; index: {} / {}", index, indices.len());
+
+                let annotation = &mut annotations[*index];
+                let side = side[i];
+
+                match &mut annotation.display_data {
+                    AnnotationDisplayData::Singleline { vertical_offset, .. } => {
+                        *vertical_offset += 1;
+                    },
+                    AnnotationDisplayData::Multiline { start_vertical_offset, end_vertical_offset, .. } => {
+                        if side {
+                            *end_vertical_offset += 1;
+                        } else {
+                            *start_vertical_offset += 1;
+                        }
+                    },
+                }
+            }
+        }
     }
 
     fn print_part_lines(&mut self, f: &mut impl WriteColor, main_line: u32, last_line: Option<u32>,
@@ -429,7 +495,9 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         }
 
         let mut underline_prototype = vec![0; self.lines[line as usize - 1].len()];
+        let mut prototype_next_index = 0;
         let mut message_kind = MessageKind::Error;
+        let mut connecting_annotations = Vec::new();
 
         for annotation in annotations.iter().rev() {
             message_kind = annotation.message_kind;
@@ -446,30 +514,112 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
                 let end_column = annotation.end.column;
 
                 underline_prototype[start_column as usize - 1 .. end_column as usize - 1].fill(if annotation.primary { 1 } else { 2 });
+                prototype_next_index = prototype_next_index.max(end_column as usize - 1);
             } else {
                 let column = if start { annotation.start.column } else { annotation.end.column };
                 underline_prototype[column as usize - 1] = if annotation.primary { 1 } else { 2 };
+                prototype_next_index = prototype_next_index.max(column as usize);
+
+                connecting_annotations.push(*annotation);
             }
 
             // self.write_annotation_debug(f, annotation)?;
         }
 
-        self.write_line_begin(f, None, " | ", continuing_annotations)?;
+        self.write_line_number(f, None, " | ")?;
 
-        for c in underline_prototype {
+        let connect_on_first_line = connecting_annotations.iter().find(|a| {
+            match &a.display_data {
+                AnnotationDisplayData::Singleline { .. } => false,
+                AnnotationDisplayData::Multiline { start_vertical_offset, end_vertical_offset, .. } => {
+                    if a.start.line == line {
+                        *start_vertical_offset == 0
+                    } else if a.end.line == line {
+                        *end_vertical_offset == 0
+                    } else {
+                        false
+                    }
+                },
+            }
+        });
+        let label_on_first_line = annotations.iter().find(|a| {
+            match &a.display_data {
+                AnnotationDisplayData::Singleline { vertical_offset, .. } => *vertical_offset == 0,
+                AnnotationDisplayData::Multiline { end_vertical_offset, .. } => {
+                    if a.end.line == line {
+                        *end_vertical_offset == 0
+                    } else if a.start.line == line {
+                        false
+                    } else {
+                        false
+                    }
+                },
+            }
+        });
+
+        for (i, annotation) in continuing_annotations.iter().enumerate() {
+            self.colors.annotation(f, annotation)?;
+            write!(f, "|")?;
+            self.colors.reset(f)?;
+
+            if connect_on_first_line.is_none() || annotation.start.line == line || i < connecting_annotations.len() - 1 {
+                write!(f, " ")?;
+            }
+        }
+
+        self.colors.reset(f)?;
+
+        if let Some(annotation) = &connect_on_first_line {
+            if annotation.start.line == line {
+                write!(f, " ")?;
+            }
+
+            self.colors.annotation(f, annotation)?;
+            write!(f, "{}", "_".repeat(2 * (self.max_nested_blocks - continuing_annotations.len()) + if annotation.start.line == line { 0 } else { 1 }))?;
+            self.colors.reset(f)?;
+        } else {
+            write!(f, "{:>nested_blocks$}", "", nested_blocks = 2 * (self.max_nested_blocks - continuing_annotations.len()))?;
+        }
+
+        let mut encountered_first = false;
+
+        for (i, c) in underline_prototype.into_iter().enumerate() {
+            if i >= prototype_next_index {
+                break;
+            }
+
             match c {
-                0 => write!(f, " ")?,
+                0 => {
+                    if let (false, Some(annotation)) = (encountered_first, connect_on_first_line) {
+                        self.colors.annotation(f, annotation)?;
+                        write!(f, "_")?;
+                        self.colors.reset(f)?;
+                    } else {
+                        write!(f, " ")?
+                    }
+                },
                 1 => {
                     self.colors.message(f, message_kind)?;
                     write!(f, "^")?;
                     self.colors.reset(f)?;
+                    encountered_first = true;
                 },
                 2 => {
                     self.colors.additional_annotation(f)?;
                     write!(f, "-")?;
                     self.colors.reset(f)?;
+                    encountered_first = true;
                 },
                 _ => {}, // Can't happen
+            }
+        }
+
+        if let Some(annotation) = &label_on_first_line {
+            if let Some(label) = annotation.label.as_ref() {
+                write!(f, " ")?;
+                self.colors.annotation(f, annotation)?;
+                write!(f, "{}", label)?;
+                self.colors.reset(f)?;
             }
         }
 
@@ -501,7 +651,7 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         }
 
         self.colors.reset(f)?;
-        write!(f, "{:>nested_blocks$}", "", nested_blocks = 2 * self.max_nested_blocks as usize - continuing_annotations.len())?;
+        write!(f, "{:>nested_blocks$}", "", nested_blocks = 2 * (self.max_nested_blocks - continuing_annotations.len()))?;
         Ok(())
     }
 
