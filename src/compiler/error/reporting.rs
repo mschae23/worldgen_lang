@@ -1,8 +1,11 @@
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::rc::Rc;
-use crate::compiler::error::render;
-use crate::compiler::error::render::ColorConfig;
+use diagnostic_render::diagnostic::AnnotationStyle;
+use diagnostic_render::file::SimpleFile;
+use diagnostic_render::render::DiagnosticRenderer;
+#[allow(deprecated)]
+use crate::compiler::error::render::{self, ColorConfig};
 use crate::compiler::error::span::Span;
 use crate::Config;
 
@@ -14,7 +17,7 @@ pub enum CompileStage {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MessageKind {
+pub enum Severity {
     Error, Warning,
 }
 
@@ -38,15 +41,15 @@ impl Annotation {
 }
 
 #[derive(Debug)]
-pub struct SubmittedMessageData<M> {
+pub struct SubmittedDiagnosticData<M> {
     pub span: Span,
     pub message: M,
-    pub suppressed_messages: Vec<SubmittedMessageData<M>>,
+    pub suppressed_messages: Vec<SubmittedDiagnosticData<M>>,
 }
 
-impl<M> SubmittedMessageData<M> {
+impl<M> SubmittedDiagnosticData<M> {
     pub fn new(span: Span, message: M) -> Self {
-        SubmittedMessageData {
+        SubmittedDiagnosticData {
             span, message,
             suppressed_messages: Vec::new(),
         }
@@ -54,43 +57,43 @@ impl<M> SubmittedMessageData<M> {
 }
 
 #[derive(Clone, Debug)]
-pub struct MessageContext<'d, D> {
+pub struct DiagnosticContext<'d, D> {
     pub span: Span,
     pub custom_data: &'d D,
 }
 
-impl<'d, D> MessageContext<'d, D> {
+impl<'d, D> DiagnosticContext<'d, D> {
     pub fn new(span: Span, marker: &'d D) -> Self {
-        MessageContext {
+        DiagnosticContext {
             span,
             custom_data: marker,
         }
     }
 }
 
-pub trait Message<D>: Debug {
+pub trait Diagnostic<D>: Debug {
     fn name(&self) -> &'static str;
 
-    fn kind(&self) -> MessageKind;
+    fn severity(&self) -> Severity;
 
-    fn description(&self, context: &MessageContext<'_, D>) -> String;
+    fn message(&self, context: &DiagnosticContext<'_, D>) -> String;
 
-    fn primary_annotation(&self, context: &MessageContext<'_, D>) -> Option<String>;
+    fn primary_annotation(&self, context: &DiagnosticContext<'_, D>) -> Option<String>;
 
-    fn additional_annotations(&self, context: &MessageContext<'_, D>) -> Vec<(Span, Option<String>)>;
+    fn additional_annotations(&self, context: &DiagnosticContext<'_, D>) -> Vec<(Span, Option<String>)>;
 
-    fn primary_note(&self, context: &MessageContext<'_, D>) -> Option<(NoteKind, String)>;
+    fn primary_note(&self, context: &DiagnosticContext<'_, D>) -> Option<(NoteKind, String)>;
 
-    fn additional_notes(&self, context: &MessageContext<'_, D>) -> Vec<(NoteKind, String)>;
+    fn additional_notes(&self, context: &DiagnosticContext<'_, D>) -> Vec<(NoteKind, String)>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MessageData {
+pub struct DiagnosticData {
     pub span: Span,
     pub stage: CompileStage,
     pub name: &'static str,
-    pub kind: MessageKind,
-    pub description: String,
+    pub severity: Severity,
+    pub message: String,
     pub primary_annotation: Option<String>,
     pub additional_annotations: Vec<(Span, Option<String>)>,
     pub primary_note: Option<(NoteKind, String)>,
@@ -98,14 +101,15 @@ pub struct MessageData {
     pub suppressed_messages: u32,
 }
 
-impl MessageData {
-    pub fn new(span: Span, stage: CompileStage, name: &'static str, kind: MessageKind,
-               description: String,
+impl DiagnosticData {
+    pub fn new(span: Span, stage: CompileStage, name: &'static str, severity: Severity,
+               message: String,
                primary_annotation: Option<String>, additional_annotations: Vec<(Span, Option<String>)>,
                primary_note: Option<(NoteKind, String)>, additional_notes: Vec<(NoteKind, String)>,
                suppressed_messages: u32) -> Self {
-        MessageData {
-            span, stage, name, kind, description,
+        DiagnosticData {
+            span, stage, name,
+            severity, message,
             primary_annotation,
             additional_annotations,
             primary_note, additional_notes,
@@ -117,14 +121,14 @@ impl MessageData {
 pub struct ErrorReporting<'source> {
     config: Rc<Config>,
     source: &'source str, path: Rc<PathBuf>,
-    messages: Vec<MessageData>,
+    diagnostics: Vec<DiagnosticData>,
 }
 
 impl<'source> ErrorReporting<'source> {
     pub fn new(config: Rc<Config>, source: &'source str, path: Rc<PathBuf>) -> Self {
         ErrorReporting {
             config, source, path,
-            messages: Vec::new(),
+            diagnostics: Vec::new(),
         }
     }
 
@@ -132,42 +136,87 @@ impl<'source> ErrorReporting<'source> {
         ErrorReporter::new(stage, marker)
     }
 
-    pub fn submit<D: Default, M: Message<D>>(&mut self, mut reporter: ErrorReporter<D, M>) {
+    pub fn submit<D: Default, M: Diagnostic<D>>(&mut self, mut reporter: ErrorReporter<D, M>) {
         let stage = reporter.stage;
         let marker = std::mem::take(&mut reporter.custom_data);
-        let messages = std::mem::take(&mut reporter.messages);
+        let diagnostics = std::mem::take(&mut reporter.diagnostics);
         drop(reporter);
 
-        self.messages.extend(messages.into_iter().map(|message| {
-            let context = MessageContext::new(message.span, &marker);
+        self.diagnostics.extend(diagnostics.into_iter().map(|diagnostic| {
+            let context = DiagnosticContext::new(diagnostic.span, &marker);
 
-            let name: &'static str = message.message.name();
-            let kind = message.message.kind();
-            let description = message.message.description(&context);
-            let primary_annotation = message.message.primary_annotation(&context);
-            let additional_annotations = message.message.additional_annotations(&context);
-            let primary_note = message.message.primary_note(&context);
-            let additional_notes = message.message.additional_notes(&context);
+            let name: &'static str = diagnostic.message.name();
+            let severity = diagnostic.message.severity();
+            let message = diagnostic.message.message(&context);
+            let primary_annotation = diagnostic.message.primary_annotation(&context);
+            let additional_annotations = diagnostic.message.additional_annotations(&context);
+            let primary_note = diagnostic.message.primary_note(&context);
+            let additional_notes = diagnostic.message.additional_notes(&context);
 
-            MessageData::new(message.span, stage, name, kind, description,
-                primary_annotation, additional_annotations, primary_note, additional_notes, message.suppressed_messages.len() as u32)
+            DiagnosticData::new(diagnostic.span, stage, name, severity, message,
+                primary_annotation, additional_annotations, primary_note, additional_notes, diagnostic.suppressed_messages.len() as u32)
         }));
     }
 
-    pub fn has_messages(&self) -> bool {
-        !self.messages.is_empty()
+    pub fn has_diagnostics(&self) -> bool {
+        !self.diagnostics.is_empty()
     }
 
+    // Prints with TerminalErrorRenderer
+    #[allow(deprecated)]
     pub fn print_simple(&mut self) {
-        let mut renderer = render::TerminalErrorRenderer::new(Rc::clone(&self.config), Rc::clone(&self.path), ColorConfig::Default, &self.source, &self.messages);
+        let mut renderer = render::TerminalErrorRenderer::new(Rc::clone(&self.config), Rc::clone(&self.path), ColorConfig::Default, &self.source, &self.diagnostics);
         renderer.render_to_stderr();
+    }
+
+    // Prints with diagnostic_render
+    pub fn print_stderr(&mut self) {
+        let file = SimpleFile::new(self.path.display().to_string(), self.source);
+
+        let mut stream = termcolor::BufferedStandardStream::stderr(termcolor::ColorChoice::Auto);
+        let mut renderer = DiagnosticRenderer::new(&mut stream,
+            diagnostic_render::render::color::DefaultColorConfig, file, diagnostic_render::render::RenderConfig {
+                surrounding_lines: 1,
+            });
+
+        let diagnostics = self.diagnostics.iter()
+            .map(|diagnostic| {
+                let mut d = diagnostic_render::diagnostic::Diagnostic::new(match diagnostic.severity {
+                    Severity::Error => diagnostic_render::diagnostic::Severity::Error,
+                    Severity::Warning => diagnostic_render::diagnostic::Severity::Warning,
+                }).with_name(diagnostic.name).with_message(&diagnostic.message);
+
+                let mut primary_annotation = diagnostic_render::diagnostic::Annotation::new(AnnotationStyle::Primary, (),
+                    diagnostic.span.start as usize..diagnostic.span.end as usize);
+
+                if let Some(label) = diagnostic.primary_annotation.as_ref() {
+                    primary_annotation = primary_annotation.with_label(label);
+                }
+
+                d = d.with_annotation(primary_annotation);
+
+                for (span, label) in diagnostic.additional_annotations.iter() {
+                    let mut annotation = diagnostic_render::diagnostic::Annotation::new(AnnotationStyle::Secondary, (),
+                        span.start as usize..span.end as usize);
+
+                    if let Some(label) = label.as_ref() {
+                        annotation = annotation.with_label(label);
+                    }
+
+                    d = d.with_annotation(annotation);
+                }
+
+                d
+            }).collect::<Vec<_>>();
+
+        renderer.render(diagnostics).expect("There was an error while formatting errors.");
     }
 }
 
 pub struct ErrorReporter<D, M> {
     stage: CompileStage,
     pub custom_data: D,
-    messages: Vec<SubmittedMessageData<M>>,
+    diagnostics: Vec<SubmittedDiagnosticData<M>>,
     panic_mode: bool,
 }
 
@@ -176,7 +225,7 @@ impl<D, M> ErrorReporter<D, M> {
         ErrorReporter {
             stage,
             custom_data: marker,
-            messages: Vec::new(),
+            diagnostics: Vec::new(),
             panic_mode: false,
         }
     }
@@ -191,10 +240,10 @@ impl<D, M> ErrorReporter<D, M> {
 
     pub fn report(&mut self, span: Span, message: M, panic: bool) { // panic is unrelated to a Rust "panic!"
         if self.panic_mode {
-            self.messages.last_mut().expect("Error reporter is in panic mode, but there are no errors")
-                .suppressed_messages.push(SubmittedMessageData::new(span, message));
+            self.diagnostics.last_mut().expect("Error reporter is in panic mode, but there are no errors")
+                .suppressed_messages.push(SubmittedDiagnosticData::new(span, message));
         } else {
-            self.messages.push(SubmittedMessageData::new(span, message));
+            self.diagnostics.push(SubmittedDiagnosticData::new(span, message));
 
             if panic {
                 self.panic_mode = true;

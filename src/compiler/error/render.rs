@@ -1,9 +1,11 @@
+#![deprecated(note = "This is the old error message renderer. Use diagnostic_render instead")]
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::rc::Rc;
 use line_col::LineColLookup;
 use termcolor::{BufferedStandardStream, Color, ColorChoice, ColorSpec, NoColor, WriteColor};
-use crate::compiler::error::{MessageData, MessageKind};
+use crate::compiler::error::{DiagnosticData, Severity};
 use crate::compiler::error::span::Span;
 use crate::Config;
 
@@ -29,10 +31,10 @@ impl ColorConfig {
         }
     }
 
-    pub fn message(&self, f: &mut impl WriteColor, kind: MessageKind) -> std::io::Result<()> {
+    pub fn message(&self, f: &mut impl WriteColor, kind: Severity) -> std::io::Result<()> {
         match kind {
-            MessageKind::Error => self.error(f),
-            MessageKind::Warning => self.warning(f),
+            Severity::Error => self.error(f),
+            Severity::Warning => self.warning(f),
         }
     }
 
@@ -111,7 +113,7 @@ pub enum AnnotationDisplayData {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnnotationData {
     span: Span,
-    message_kind: MessageKind, primary: bool, // error / warning (for colors), primary (for color and underline char)
+    message_kind: Severity, primary: bool, // error / warning (for colors), primary (for color and underline char)
     label: Option<String>,
     start: LineColumn, end: LineColumn,
     display_data: AnnotationDisplayData,
@@ -121,13 +123,13 @@ pub struct TerminalErrorRenderer<'source, 'm> {
     config: Rc<Config>, path: Rc<PathBuf>, colors: ColorConfig,
     lines: Vec<&'source str>,
     line_col_lookup: LineColLookup<'source>,
-    messages: &'m [MessageData],
+    messages: &'m [DiagnosticData],
 
     max_nested_blocks: usize, line_digits: u32,
 }
 
 impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
-    pub fn new(config: Rc<Config>, path: Rc<PathBuf>, color_config: ColorConfig, source: &'source str, messages: &'m [MessageData]) -> Self {
+    pub fn new(config: Rc<Config>, path: Rc<PathBuf>, color_config: ColorConfig, source: &'source str, messages: &'m [DiagnosticData]) -> Self {
         TerminalErrorRenderer {
             config, path,
             colors: color_config, lines: source.lines().collect(), line_col_lookup: LineColLookup::new(source), messages,
@@ -167,18 +169,18 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         Ok(())
     }
 
-    fn print_message(&mut self, f: &mut impl WriteColor, message: &MessageData) -> std::io::Result<()> {
-        self.colors.message(f, message.kind)?;
-        write!(f, "{}", match message.kind {
-            MessageKind::Error => "error",
-            MessageKind::Warning => "warning",
+    fn print_message(&mut self, f: &mut impl WriteColor, message: &DiagnosticData) -> std::io::Result<()> {
+        self.colors.message(f, message.severity)?;
+        write!(f, "{}", match message.severity {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
         })?;
         // self.colors.reset(f)?;
 
-        self.colors.message(f, message.kind)?;
+        self.colors.message(f, message.severity)?;
         write!(f, "{}{}{}", "[", message.name, "]")?;
         self.colors.description(f)?;
-        writeln!(f, ": {}", &message.description)?;
+        writeln!(f, ": {}", &message.message)?;
         self.colors.reset(f)?;
 
         let mut annotations = self.collect_annotations(message);
@@ -196,18 +198,18 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
         Ok(())
     }
 
-    fn collect_annotations(&mut self, message: &MessageData) -> Vec<AnnotationData> {
+    fn collect_annotations(&mut self, message: &DiagnosticData) -> Vec<AnnotationData> {
         let mut annotations = Vec::with_capacity(message.additional_annotations.len() + 1);
-        self.add_initial_annotation(&mut annotations, message.kind, true, message.span, message.primary_annotation.clone());
+        self.add_initial_annotation(&mut annotations, message.severity, true, message.span, message.primary_annotation.clone());
 
         for (span, label) in message.additional_annotations.iter() {
-            self.add_initial_annotation(&mut annotations, message.kind, false, *span, label.clone());
+            self.add_initial_annotation(&mut annotations, message.severity, false, *span, label.clone());
         }
 
         annotations
     }
 
-    fn add_initial_annotation(&mut self, annotations: &mut Vec<AnnotationData>, message_kind: MessageKind, primary: bool, span: Span, label: Option<String>) {
+    fn add_initial_annotation(&mut self, annotations: &mut Vec<AnnotationData>, message_kind: Severity, primary: bool, span: Span, label: Option<String>) {
         let start = LineColumn::from_usize_lossy(self.line_col_lookup.get(span.start as usize));
         let mut end = LineColumn::from_usize_lossy(self.line_col_lookup.get(span.end as usize));
 
@@ -513,9 +515,14 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
             return Ok(());
         }
 
+        self.write_single_source_annotations(f, line, annotations, continuing_annotations)
+    }
+
+    fn write_single_source_annotations(&mut self, f: &mut impl WriteColor, line: u32,
+                                       annotations: &[&AnnotationData], continuing_annotations: &[&AnnotationData]) -> std::io::Result<()> {
         let mut underline_prototype = vec![0; self.lines[line as usize - 1].len()];
         let mut prototype_next_index = 0;
-        let mut message_kind = MessageKind::Error;
+        let mut message_kind = Severity::Error;
         let mut connecting_annotations = Vec::new();
 
         for annotation in annotations.iter().rev() {
@@ -642,8 +649,7 @@ impl<'source, 'm> TerminalErrorRenderer<'source, 'm> {
             }
         }
 
-        writeln!(f)?;
-        Ok(())
+        writeln!(f)
     }
 
     fn write_line_number(&self, f: &mut impl WriteColor, line: Option<u32>, separator: &str) -> std::io::Result<()> {

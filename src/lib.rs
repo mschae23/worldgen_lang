@@ -38,8 +38,8 @@ pub fn run() -> Result<(), std::io::Error> {
     std::fs::create_dir_all(&config.target_dir)?;
     // let mut writer = JsonWriter::new(config.indentation.to_owned(), !config.no_pretty_print);
 
-    if pipeline.reporting.has_messages() {
-        pipeline.reporting.print_simple();
+    if pipeline.reporting.has_diagnostics() {
+        pipeline.reporting.print_stderr();
     } else {
         for decl in &pipeline.declarations {
             eprintln!("{:?}", decl);

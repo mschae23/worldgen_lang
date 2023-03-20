@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 use non_empty_vec::ne_vec;
 use crate::compiler::ast::simple::{Decl, SingleImplementsPart, TypePart, TypeReferencePart};
-use crate::compiler::error::{ErrorReporter, Message, MessageContext, MessageKind, NoteKind};
+use crate::compiler::error::{ErrorReporter, Diagnostic, DiagnosticContext, Severity, NoteKind};
 use crate::compiler::error::span::Span;
 use crate::compiler::lexer::{Lexer, LexerErrorReporter, Token, TokenType};
 
@@ -39,7 +39,7 @@ pub enum ParserError {
     ExpectedDeclaration,
 }
 
-impl Message<MessageMarker> for ParserError {
+impl Diagnostic<MessageMarker> for ParserError {
     fn name(&self) -> &'static str {
         match self {
             Self::ExpectedStatementEnd => "parser/expected_statement_end",
@@ -50,17 +50,17 @@ impl Message<MessageMarker> for ParserError {
         }
     }
 
-    fn kind(&self) -> MessageKind {
+    fn severity(&self) -> Severity {
         match self {
             Self::ExpectedStatementEnd
                 | Self::ExpectedAfter(_, _)
                 | Self::ExpectedBefore(_, _)
                 | Self::Expected(_)
-                | Self::ExpectedDeclaration => MessageKind::Error,
+                | Self::ExpectedDeclaration => Severity::Error,
         }
     }
 
-    fn description(&self, _context: &MessageContext<'_, MessageMarker>) -> String {
+    fn message(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> String {
         match self {
             Self::ExpectedStatementEnd => String::from("Expected `;` after statement"),
             Self::ExpectedAfter(a, b) => format!("Expected {} after {}", a, b),
@@ -70,7 +70,7 @@ impl Message<MessageMarker> for ParserError {
         }
     }
 
-    fn primary_annotation(&self, _context: &MessageContext<'_, MessageMarker>) -> Option<String> {
+    fn primary_annotation(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Option<String> {
         match self {
             Self::ExpectedStatementEnd => Some(String::from("expected `;` here")),
             Self::ExpectedAfter(a, _) => Some(format!("expected {} here", a)),
@@ -80,19 +80,19 @@ impl Message<MessageMarker> for ParserError {
         }
     }
 
-    fn additional_annotations(&self, _context: &MessageContext<'_, MessageMarker>) -> Vec<(Span, Option<String>)> {
+    fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(Span, Option<String>)> {
         match self {
             _ => Vec::new(),
         }
     }
 
-    fn primary_note(&self, _context: &MessageContext<'_, MessageMarker>) -> Option<(NoteKind, String)> {
+    fn primary_note(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Option<(NoteKind, String)> {
         match self {
             _ => None,
         }
     }
 
-    fn additional_notes(&self, _context: &MessageContext<'_, MessageMarker>) -> Vec<(NoteKind, String)> {
+    fn additional_notes(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(NoteKind, String)> {
         match self {
             _ => Vec::new(),
         }

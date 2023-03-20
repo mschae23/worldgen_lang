@@ -1,6 +1,6 @@
 use std::fmt::{Debug, Display, Formatter};
 use std::str::Chars;
-use crate::compiler::error::{ErrorReporter, Message, MessageContext, MessageKind, NoteKind};
+use crate::compiler::error::{ErrorReporter, Diagnostic, DiagnosticContext, Severity, NoteKind};
 use crate::compiler::error::span::Span;
 use crate::util;
 
@@ -146,7 +146,7 @@ impl LexerError {
     }
 }
 
-impl Message<MessageMarker> for LexerError {
+impl Diagnostic<MessageMarker> for LexerError {
     fn name(&self) -> &'static str {
         match self {
             Self::UnexpectedEof => "lexer/unexpected_eof",
@@ -157,11 +157,11 @@ impl Message<MessageMarker> for LexerError {
         }
     }
 
-    fn kind(&self) -> MessageKind {
-        MessageKind::Error
+    fn severity(&self) -> Severity {
+        Severity::Error
     }
 
-    fn description(&self, _context: &MessageContext<'_, ()>) -> String {
+    fn message(&self, _context: &DiagnosticContext<'_, ()>) -> String {
         match self {
             Self::UnexpectedEof => String::from("Unexpected EOF"),
             Self::UnexpectedCharacter(c) => format!("Unexpected character '{}'", c),
@@ -171,19 +171,19 @@ impl Message<MessageMarker> for LexerError {
         }
     }
 
-    fn primary_annotation(&self, _context: &MessageContext<'_, MessageMarker>) -> Option<String> {
+    fn primary_annotation(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Option<String> {
         None
     }
 
-    fn additional_annotations(&self, _context: &MessageContext<'_, MessageMarker>) -> Vec<(Span, Option<String>)> {
+    fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(Span, Option<String>)> {
         Vec::new()
     }
 
-    fn primary_note(&self, _context: &MessageContext<'_, ()>) -> Option<(NoteKind, String)> {
+    fn primary_note(&self, _context: &DiagnosticContext<'_, ()>) -> Option<(NoteKind, String)> {
         None
     }
 
-    fn additional_notes(&self, _context: &MessageContext<'_, ()>) -> Vec<(NoteKind, String)> {
+    fn additional_notes(&self, _context: &DiagnosticContext<'_, ()>) -> Vec<(NoteKind, String)> {
         Vec::new()
     }
 }
