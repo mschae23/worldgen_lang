@@ -100,6 +100,8 @@ impl<'source> Token<'source> {
     pub fn source(&self) -> &'source str { &self.source }
     pub fn start(&self) -> &TokenPos { &self.start }
     pub fn end(&self) -> &TokenPos { &self.end }
+
+    pub fn span(&self) -> Span { Span::from(self) }
 }
 
 impl<'source> Display for Token<'source> {

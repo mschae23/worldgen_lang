@@ -27,6 +27,12 @@ impl<'source> Debug for TypePart<'source> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct ParameterPart<'source> {
+    pub name: Token<'source>,
+    pub parameter_type: TypePart<'source>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct SingleImplementsPart<'source> {
     pub name: TypeReferencePart<'source>,
     pub parameters: Vec<Expr<'source>>,
@@ -45,13 +51,20 @@ pub struct ClassReprPart<'source> {
     pub span: Span,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TemplateDeclKind {
+    Template,
+    Optimize,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TemplateKind<'source> {
     Template {
         name: Token<'source>,
     },
     Conversion {
-        from: TypePart<'source>,
+        // Doesn't have the type it converts from here because it's a parameter
+        span: Span,
     },
     Optimize {
         on: TypePart<'source>,
@@ -73,21 +86,26 @@ pub enum Decl<'source> {
     },
     Interface {
         name: Token<'source>,
-        parameters: Vec<(Token<'source>, TypePart<'source>)>,
+        parameters: Vec<ParameterPart<'source>>,
         implements: Option<ClassImplementsPart<'source>>,
         class_repr: Option<ClassReprPart<'source>>,
         parameter_span: Span,
     },
     Class {
         name: Token<'source>,
-        parameters: Vec<(Token<'source>, TypePart<'source>)>,
-        implements: ClassImplementsPart<'source>, // TODO should this be optional or required?
-        class_repr: ClassReprPart<'source>,
+        parameters: Vec<ParameterPart<'source>>,
+        implements: ClassImplementsPart<'source>,
+        class_repr: Option<ClassReprPart<'source>>,
         parameter_span: Span,
+    },
+    TypeAlias {
+        name: Token<'source>,
+        to: TypePart<'source>,
+        condition: Option<Expr<'source>>,
     },
     Template {
         kind: TemplateKind<'source>,
-        parameters: Vec<(Token<'source>, TypePart<'source>)>,
+        parameters: Vec<ParameterPart<'source>>,
         return_type: TypePart<'source>,
         expr: TemplateExpr<'source>,
         parameter_span: Span,
