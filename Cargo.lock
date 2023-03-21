@@ -53,8 +53,8 @@ dependencies = [
 
 [[package]]
 name = "diagnostic_render"
-version = "1.0.2"
-source = "git+https://github.com/mschae23/diagnostic_render?tag=v1.0.2#59ec4e2966c35afddcae64107b8270e4a51e2f96"
+version = "1.0.3"
+source = "git+https://github.com/mschae23/diagnostic_render?tag=v1.0.3#75e162d822515e8e55daeabbc2acb3d3046193a1"
 dependencies = [
  "termcolor",
 ]

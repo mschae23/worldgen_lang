@@ -73,7 +73,7 @@ pub enum TemplateKind<'source> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VariableKind {
-    Simple,
+    Auto,
     Inline,
     Export,
 }

@@ -1,6 +1,6 @@
 use lazy_static::lazy_static;
 use non_empty_vec::ne_vec;
-use crate::compiler::ast::simple::{ClassImplementsPart, Decl, Expr, ParameterPart, SingleImplementsPart, TemplateDeclKind, TemplateExpr, TemplateKind, TypePart, TypeReferencePart};
+use crate::compiler::ast::simple::{ClassImplementsPart, Decl, Expr, ParameterPart, SingleImplementsPart, TemplateDeclKind, TemplateExpr, TemplateKind, TypePart, TypeReferencePart, VariableKind};
 use crate::compiler::error::{ErrorReporter, Diagnostic, DiagnosticContext, Severity, NoteKind};
 use crate::compiler::error::span::Span;
 use crate::compiler::lexer::{Lexer, LexerErrorReporter, Token, TokenType};
@@ -152,8 +152,6 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_declaration(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Decl<'source> {
-        // eprintln!("[debug] Parsing decl");
-
         if self.matches(TokenType::Module, lexer_reporter) {
             return self.parse_module_declaration(reporter, lexer_reporter);
         } else if self.matches(TokenType::Interface, lexer_reporter) {
@@ -170,11 +168,32 @@ impl<'source> Parser<'source> {
             return self.parse_include_declaration(reporter, lexer_reporter);
         } else if self.matches(TokenType::Import, lexer_reporter) {
             return self.parse_import_declaration(reporter, lexer_reporter);
-        } /* else if self.matches(TokenType::Export, lexer_reporter) {
-            return self.parse_export_declaration(reporter, lexer_reporter);
-        } */
+        } else if self.matches(TokenType::Export, lexer_reporter) {
+            let variable_span = Some(self.previous.span());
+            self.expect(TokenType::Identifier, ParserError::ExpectedAfter("name", "`export`", variable_span), reporter, lexer_reporter);
+            let name = self.previous.clone();
 
-        self.error_at_current(ParserError::ExpectedDeclaration, true, reporter);
+            return self.parse_variable_declaration(variable_span, VariableKind::Export, name, reporter, lexer_reporter);
+        } else if self.matches(TokenType::Inline, lexer_reporter) {
+            let variable_span = Some(self.previous.span());
+            self.expect(TokenType::Identifier, ParserError::ExpectedAfter("name", "`inline`", variable_span), reporter, lexer_reporter);
+            let name = self.previous.clone();
+
+            return self.parse_variable_declaration(variable_span, VariableKind::Inline, name, reporter, lexer_reporter);
+        }
+
+        if self.matches(TokenType::Identifier, lexer_reporter) {
+            let name = self.previous.clone();
+
+            if self.check(TokenType::Assign) {
+                return self.parse_variable_declaration(None, VariableKind::Auto, name, reporter, lexer_reporter);
+            } else {
+                self.error_at(&name, ParserError::ExpectedDeclaration, true, reporter);
+            }
+        } else {
+            self.error_at_current(ParserError::ExpectedDeclaration, true, reporter);
+        }
+
         let decl = Decl::Error; // self.parse_statement(reporter, lexer_reporter);
 
         if reporter.panic_mode() {
@@ -460,6 +479,27 @@ impl<'source> Parser<'source> {
         Decl::Import {
             path,
             selector,
+            span: Span::new(start_pos, end_pos),
+        }
+    }
+
+    fn parse_variable_declaration(&mut self, variable_span: Option<Span>, kind: VariableKind, name: Token<'source>, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Decl<'source> {
+        let start_pos = variable_span.map(|span| span.start).unwrap_or_else(|| name.start.index);
+
+        self.expect(TokenType::Assign, ParserError::ExpectedAfter("`=`", "variable name", variable_span), reporter, lexer_reporter);
+        self.error(ParserError::Unimplemented("variable expression"), false, reporter);
+
+        while !self.check(TokenType::Semicolon) && !self.check(TokenType::Eof) {
+            self.consume(lexer_reporter);
+        }
+
+        let end_pos = self.previous.end.index;
+        self.expect_declaration_end(reporter, lexer_reporter);
+
+        Decl::Variable {
+            kind,
+            name,
+            expr: Expr::Error,
             span: Span::new(start_pos, end_pos),
         }
     }
