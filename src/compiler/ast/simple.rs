@@ -1,7 +1,7 @@
 use std::fmt::{Debug, Formatter};
 use non_empty_vec::NonEmpty;
 use crate::compiler::error::span::Span;
-use crate::compiler::lexer::{Token, TokenPos};
+use crate::compiler::lexer::Token;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeReferencePart<'source>(pub NonEmpty<Token<'source>>, pub Span);
@@ -131,9 +131,8 @@ pub enum Decl<'source> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum TemplateExpr<'source> {
     Block {
-        expressions: Vec<TemplateExpr<'source>>,
-        last: Box<TemplateExpr<'source>>,
-        start_token: TokenPos, end_token: TokenPos,
+        expressions: NonEmpty<TemplateExpr<'source>>,
+        span: Span,
     },
     If {
         condition: Expr<'source>,
@@ -153,12 +152,12 @@ pub enum Expr<'source> {
     Identifier(Token<'source>),
 
     UnaryOperator {
-        operator: TokenPos,
+        operator_span: Span,
         expr: Box<Expr<'source>>,
     },
     BinaryOperator {
         left: Box<Expr<'source>>,
-        operator: TokenPos,
+        operator_span: Span,
         right: Box<Expr<'source>>,
     },
     FunctionCall {
@@ -176,9 +175,8 @@ pub enum Expr<'source> {
     },
     Index {
         receiver: Box<Expr<'source>>,
-        operator_start: TokenPos,
         index: Box<Expr<'source>>,
-        operator_end: TokenPos,
+        operator_span: Span,
     },
     BuiltinFunctionCall {
         name: Token<'source>,
@@ -188,17 +186,17 @@ pub enum Expr<'source> {
     BuiltinType(TypePart<'source>),
     TypeCast {
         expr: Box<Expr<'source>>,
-        operator: TokenPos,
+        operator_span: Span,
         to: TypePart<'source>,
     },
 
     Object {
         fields: Vec<(Token<'source>, Expr<'source>)>,
-        start_token: TokenPos, end_token: TokenPos,
+        span: Span,
     },
     Array {
         elements: Vec<Expr<'source>>,
-        start_token: TokenPos, end_token: TokenPos,
+        span: Span,
     },
 
     Error,

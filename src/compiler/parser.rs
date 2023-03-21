@@ -1,3 +1,4 @@
+use std::fmt::{Display, Formatter};
 use lazy_static::lazy_static;
 use non_empty_vec::ne_vec;
 use crate::compiler::ast::simple::{ClassImplementsPart, Decl, Expr, ParameterPart, SingleImplementsPart, TemplateDeclKind, TemplateExpr, TemplateKind, TypePart, TypeReferencePart, VariableKind};
@@ -30,6 +31,20 @@ lazy_static! {
 
 pub type MessageMarker = ();
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LiteralKind {
+    Float, Int,
+}
+
+impl Display for LiteralKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LiteralKind::Float => write!(f, "float"),
+            LiteralKind::Int => write!(f, "int"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParserError {
     ExpectedDeclarationEnd,
@@ -37,7 +52,10 @@ pub enum ParserError {
     ExpectedBefore(&'static str, &'static str, Option<Span>), // Same here
     Expected(&'static str),
     ParameterCount(u32, u32, Span),
+    TooManyArguments(u32),
+    FailedParseLiteral(LiteralKind), // If the lexer is implemented properly, it shouldn't actually be possible for this to happen
     ExpectedDeclaration,
+    ExpectedExpression,
     Unimplemented(&'static str),
 }
 
@@ -49,7 +67,10 @@ impl Diagnostic<MessageMarker> for ParserError {
             Self::ExpectedBefore(_, _, _) => "parser/expected_before",
             Self::Expected(_) => "parser/expected",
             Self::ParameterCount(_, _, _) => "parser/parameter_count",
+            Self::TooManyArguments(_) => "parser/argument_count",
+            Self::FailedParseLiteral(_) => "parser/failed_parse_literal",
             Self::ExpectedDeclaration => "parser/expected_declaration",
+            Self::ExpectedExpression => "parser/expected_expression",
             Self::Unimplemented(_) => "parser/unimplemented",
         }
     }
@@ -61,7 +82,10 @@ impl Diagnostic<MessageMarker> for ParserError {
             | Self::ExpectedBefore(_, _, _)
             | Self::Expected(_)
             | Self::ParameterCount(_, _, _)
+            | Self::TooManyArguments(_)
+            | Self::FailedParseLiteral(_)
             | Self::ExpectedDeclaration
+            | Self::ExpectedExpression
             | Self::Unimplemented(_) => Severity::Error,
         }
     }
@@ -74,7 +98,10 @@ impl Diagnostic<MessageMarker> for ParserError {
             Self::Expected(a) => format!("Expected {}", a),
             Self::ParameterCount(expected, got, _) => format!("Expected {} {}, found {}", *expected,
                 if *expected == 1 { "parameter" } else { "parameters" }, *got),
+            Self::TooManyArguments(actual) => format!("More than 255 arguments to a template call are not supported (found {})", *actual),
+            Self::FailedParseLiteral(kind) => format!("Failed to parse {} literal", kind),
             Self::ExpectedDeclaration => String::from("Expected declaration"),
+            Self::ExpectedExpression => String::from("Expected expression"),
             Self::Unimplemented(msg) => format!("Not implemented yet: {}", msg),
         }
     }
@@ -87,7 +114,10 @@ impl Diagnostic<MessageMarker> for ParserError {
             Self::Expected(a) => Some(format!("expected {} here", a)),
             Self::ParameterCount(expected, _, _) => Some(format!("expected {} {} here",
                 *expected, if *expected == 1 { "parameter" } else { "parameters" })),
+            Self::TooManyArguments(_) => Some(String::from("found too many arguments here")),
+            Self::FailedParseLiteral(_) => None,
             Self::ExpectedDeclaration => Some(String::from("expected declaration here")),
+            Self::ExpectedExpression => Some(String::from("expected expression here")),
             Self::Unimplemented(_) => Some(String::from("unimplemented feature used here")),
         }
     }
@@ -102,12 +132,14 @@ impl Diagnostic<MessageMarker> for ParserError {
     }
 
     fn primary_note(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Option<(NoteKind, String)> {
+        #[allow(clippy::match_single_binding)]
         match self {
             _ => None,
         }
     }
 
     fn additional_notes(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(NoteKind, String)> {
+        #[allow(clippy::match_single_binding)]
         match self {
             _ => Vec::new(),
         }
@@ -194,6 +226,7 @@ impl<'source> Parser<'source> {
             self.error_at_current(ParserError::ExpectedDeclaration, true, reporter);
         }
 
+        self.consume(lexer_reporter);
         let decl = Decl::Error; // self.parse_statement(reporter, lexer_reporter);
 
         if reporter.panic_mode() {
@@ -314,10 +347,6 @@ impl<'source> Parser<'source> {
 
         let class_repr = None;
 
-        while !self.check(TokenType::Semicolon) && !self.check(TokenType::Eof) {
-            self.consume(lexer_reporter);
-        }
-
         self.expect_declaration_end(reporter, lexer_reporter);
 
         Decl::Class {
@@ -412,19 +441,13 @@ impl<'source> Parser<'source> {
         let return_type = self.parse_type_part("`:`", reporter, lexer_reporter);
 
         self.expect(TokenType::BracketLeft, ParserError::ExpectedAfter("`{`", "template return type", Some(template_span)), reporter, lexer_reporter);
-        self.error(ParserError::Unimplemented("template body"), false, reporter);
-
-        while !self.check(TokenType::BracketRight) && !self.check(TokenType::Eof) {
-            self.consume(lexer_reporter);
-        }
-
-        self.expect(TokenType::BracketRight, ParserError::ExpectedAfter("`}`", "template body", Some(template_span)), reporter, lexer_reporter);
+        let expr = self.parse_block_template_expression(reporter, lexer_reporter);
 
         Decl::Template {
             kind,
             parameters,
             return_type,
-            expr: TemplateExpr::Simple(Expr::Error),
+            expr,
             parameter_span,
         }
     }
@@ -487,11 +510,7 @@ impl<'source> Parser<'source> {
         let start_pos = variable_span.map(|span| span.start).unwrap_or_else(|| name.start.index);
 
         self.expect(TokenType::Assign, ParserError::ExpectedAfter("`=`", "variable name", variable_span), reporter, lexer_reporter);
-        self.error(ParserError::Unimplemented("variable expression"), false, reporter);
-
-        while !self.check(TokenType::Semicolon) && !self.check(TokenType::Eof) {
-            self.consume(lexer_reporter);
-        }
+        let expr = self.parse_expression(reporter, lexer_reporter);
 
         let end_pos = self.previous.end.index;
         self.expect_declaration_end(reporter, lexer_reporter);
@@ -499,7 +518,7 @@ impl<'source> Parser<'source> {
         Decl::Variable {
             kind,
             name,
-            expr: Expr::Error,
+            expr,
             span: Span::new(start_pos, end_pos),
         }
     }
@@ -583,16 +602,10 @@ impl<'source> Parser<'source> {
 
         let (args, args_span) = if !self.check(TokenType::ParenthesisRight) {
             let start_pos = self.previous.start.index;
-            let /* mut */ args = vec![/* self.parse_expr(reporter, lexer_reporter) */];
+            let mut args = vec![self.parse_expression(reporter, lexer_reporter)];
 
-            // while self.matches(TokenType::Comma, lexer_reporter) {
-            //     args.push(self.parse_expr(reporter, lexer_reporter));
-            // }
-
-            self.error_at_current(ParserError::Unimplemented("expressions"), false, reporter);
-
-            while !self.check(TokenType::ParenthesisRight) && !self.check(TokenType::Eof) {
-                self.consume(lexer_reporter);
+            while self.matches(TokenType::Comma, lexer_reporter) {
+                args.push(self.parse_expression(reporter, lexer_reporter));
             }
 
             self.expect(TokenType::ParenthesisRight, ParserError::ExpectedAfter("`)`", "arguments", None), reporter, lexer_reporter);
@@ -629,6 +642,379 @@ impl<'source> Parser<'source> {
             parts,
             span: Span::new(start_pos, self.previous.end.index),
         }
+    }
+
+    // Template expression parsing
+
+    fn parse_block_template_expression(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> TemplateExpr<'source> {
+        // Expects `{` to be matched already
+        let start_pos = self.previous.start.index;
+        let open_span = self.previous.span();
+
+        let mut expressions = ne_vec![self.parse_template_expression(reporter, lexer_reporter)];
+
+        while self.matches(TokenType::Semicolon, lexer_reporter) {
+            expressions.push(self.parse_template_expression(reporter, lexer_reporter));
+        }
+
+        self.expect(TokenType::BracketRight, ParserError::ExpectedAfter("`}`", "last expression in block", Some(open_span)), reporter, lexer_reporter);
+        let end_pos = self.previous.end.index;
+
+        TemplateExpr::Block {
+            expressions,
+            span: Span::new(start_pos, end_pos),
+        }
+    }
+
+    fn parse_template_expression(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> TemplateExpr<'source> {
+        if self.matches(TokenType::If, lexer_reporter) {
+            self.parse_if_template_expression(reporter, lexer_reporter)
+        } else {
+            self.parse_simple_template_expression(reporter, lexer_reporter)
+        }
+    }
+
+    fn parse_if_template_expression(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> TemplateExpr<'source> {
+        let if_span = self.previous.span();
+
+        self.expect(TokenType::ParenthesisLeft, ParserError::ExpectedAfter("`(`", "`if``", None), reporter, lexer_reporter);
+        let condition_start_pos = self.previous.start.index;
+        let condition = self.parse_expression(reporter, lexer_reporter);
+        self.expect(TokenType::ParenthesisRight, ParserError::ExpectedAfter("`}`", "if expression condition`", None), reporter, lexer_reporter);
+        let condition_end_pos = self.previous.end.index;
+
+        let then_block = if self.matches(TokenType::BracketLeft, lexer_reporter) {
+            self.parse_block_template_expression(reporter, lexer_reporter)
+        } else {
+            self.parse_template_expression(reporter, lexer_reporter)
+        };
+
+        self.expect(TokenType::Else, ParserError::ExpectedAfter("`else`", "`}`", Some(if_span)), reporter, lexer_reporter);
+
+        let otherwise_block = if self.matches(TokenType::BracketLeft, lexer_reporter) {
+            self.parse_block_template_expression(reporter, lexer_reporter)
+        } else {
+            self.parse_template_expression(reporter, lexer_reporter)
+        };
+
+        TemplateExpr::If {
+            condition,
+            then: Box::new(then_block),
+            otherwise: Box::new(otherwise_block),
+            condition_span: Span::new(condition_start_pos, condition_end_pos),
+        }
+    }
+
+    fn parse_simple_template_expression(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> TemplateExpr<'source> {
+        TemplateExpr::Simple(self.parse_expression(reporter, lexer_reporter))
+    }
+
+    // Expression parsing
+
+    fn parse_expression(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Expr<'source> {
+        self.parse_or(reporter, lexer_reporter)
+    }
+
+    fn parse_or(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Expr<'source> {
+        let mut expr = self.parse_and(reporter, lexer_reporter);
+
+        while self.matches(TokenType::ShortcircuitOr, lexer_reporter) {
+            let operator_span = self.previous.span();
+            let right = self.parse_and(reporter, lexer_reporter);
+
+            expr = Expr::BinaryOperator { left: Box::new(expr), operator_span, right: Box::new(right) };
+        }
+
+        expr
+    }
+
+    fn parse_and(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Expr<'source> {
+        let mut expr = self.parse_equality(reporter, lexer_reporter);
+
+        while self.matches(TokenType::ShortcircuitAnd, lexer_reporter) {
+            let operator_span = self.previous.span();
+            let right = self.parse_equality(reporter, lexer_reporter);
+
+            expr = Expr::BinaryOperator { left: Box::new(expr), operator_span, right: Box::new(right) };
+        }
+
+        expr
+    }
+
+    fn parse_equality(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Expr<'source> {
+        let mut expr = self.parse_comparison(reporter, lexer_reporter);
+
+        while self.matches_any(&[TokenType::Equal, TokenType::NotEqual], lexer_reporter) {
+            let operator_span = self.previous.span();
+            let right = self.parse_comparison(reporter, lexer_reporter);
+
+            expr = Expr::BinaryOperator { left: Box::new(expr), operator_span, right: Box::new(right) };
+        }
+
+        expr
+    }
+
+    fn parse_comparison(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Expr<'source> {
+        let mut expr = self.parse_term(reporter, lexer_reporter);
+
+        while self.matches_any(&[TokenType::Less, TokenType::LessEqual, TokenType::Greater, TokenType::GreaterEqual], lexer_reporter) {
+            let operator_span = self.previous.span();
+            let right = self.parse_term(reporter, lexer_reporter);
+
+            expr = Expr::BinaryOperator { left: Box::new(expr), operator_span, right: Box::new(right) };
+        }
+
+        expr
+    }
+
+    fn parse_term(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Expr<'source> {
+        let mut expr = self.parse_factor(reporter, lexer_reporter);
+
+        while self.matches_any(&[TokenType::Plus, TokenType::Minus], lexer_reporter) {
+            let operator_span = self.previous.span();
+            let right = self.parse_factor(reporter, lexer_reporter);
+
+            expr = Expr::BinaryOperator { left: Box::new(expr), operator_span, right: Box::new(right) };
+        }
+
+        expr
+    }
+
+    fn parse_factor(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Expr<'source> {
+        let mut expr = self.parse_unary(reporter, lexer_reporter);
+
+        while self.matches_any(&[TokenType::Multiply, TokenType::Divide], lexer_reporter) {
+            let operator_span = self.previous.span();
+            let right = self.parse_unary(reporter, lexer_reporter);
+
+            expr = Expr::BinaryOperator { left: Box::new(expr), operator_span, right: Box::new(right) };
+        }
+
+        expr
+    }
+
+    fn parse_unary(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Expr<'source> {
+        if self.matches_any(&[TokenType::Minus, TokenType::Not], lexer_reporter) {
+            let operator_span = self.previous.span();
+            let right = self.parse_unary(reporter, lexer_reporter);
+
+            return Expr::UnaryOperator { operator_span, expr: Box::new(right) };
+        }
+
+        self.parse_cast(reporter, lexer_reporter)
+    }
+
+    fn parse_cast(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Expr<'source> {
+        let mut expr = self.parse_call(reporter, lexer_reporter);
+
+        loop {
+            if self.matches(TokenType::As, lexer_reporter) {
+                let operator_span = self.previous.span();
+                let to = self.parse_type_part("`as`", reporter, lexer_reporter);
+
+                expr = Expr::TypeCast { expr: Box::new(expr), operator_span, to, }
+            } else {
+                break;
+            }
+        }
+
+        expr
+    }
+
+    fn parse_call(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Expr<'source> {
+        let mut expr = self.parse_primary(reporter, lexer_reporter);
+
+        loop {
+            if self.matches(TokenType::ParenthesisLeft, lexer_reporter) {
+                expr = self.finish_call(expr, reporter, lexer_reporter);
+            } else if self.matches(TokenType::ColonColon, lexer_reporter) {
+                self.expect(TokenType::Identifier, ParserError::ExpectedAfter("member name", "`::`", None), reporter, lexer_reporter);
+                let name = self.previous.clone();
+
+                expr = Expr::Member { receiver: Box::new(expr), name, }
+            } else if self.matches(TokenType::Dot, lexer_reporter) {
+                self.expect_any(&[TokenType::Identifier, TokenType::Type], ParserError::ExpectedAfter("member name", "`.`", None), reporter, lexer_reporter);
+                let name = self.previous.clone();
+                // let is_type = name.token_type() == TokenType::Type;
+
+                expr = Expr::Receiver { receiver: Box::new(expr), name, };
+
+                // if !is_type {
+                //     self.expect(TokenType::ParenthesisLeft, ParserError::ExpectedAfter("`(`", "template name", None), reporter, lexer_reporter);
+                //     expr = self.finish_call(expr, reporter, lexer_reporter);
+                // }
+            } else if self.matches(TokenType::SquareBracketLeft, lexer_reporter) {
+                let operator_span = self.previous.span();
+
+                let index = self.parse_expression(reporter, lexer_reporter);
+                self.expect(TokenType::SquareBracketRight, ParserError::ExpectedAfter("`]`", "index expression", None), reporter, lexer_reporter);
+
+                expr = Expr::Index { receiver: Box::new(expr), operator_span, index: Box::new(index), }
+            } else {
+                break;
+            }
+        }
+
+        expr
+    }
+
+    fn finish_call(&mut self, callee: Expr<'source>, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Expr<'source> {
+        let parenthesis_left = self.previous.start.index;
+
+        let mut arguments = vec![];
+
+        if !self.check(TokenType::ParenthesisRight) {
+            arguments.push(self.parse_expression(reporter, lexer_reporter));
+
+            while self.matches(TokenType::Comma, lexer_reporter) {
+                if arguments.len() >= 255 {
+                    self.error_at_current(ParserError::TooManyArguments(arguments.len() as u32), false, reporter);
+                }
+
+                arguments.push(self.parse_expression(reporter, lexer_reporter));
+            }
+        }
+
+        self.expect(TokenType::ParenthesisRight, ParserError::ExpectedAfter("`)`", "function call arguments", None), reporter, lexer_reporter);
+        let parenthesis_right = self.previous.end.index;
+
+        Expr::FunctionCall { callee: Box::new(callee), args_span: Span::new(parenthesis_left, parenthesis_right), args: arguments, }
+    }
+
+    fn parse_primary(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Expr<'source> {
+        if self.matches(TokenType::LiteralFloat, lexer_reporter) {
+            let number_token = self.previous.clone();
+            let parsed: Result<f64, _> = number_token.source().parse();
+
+            return match parsed {
+                Ok(number) => Expr::ConstantFloat(number, number_token.span()),
+                Err(_) => {
+                    self.error(ParserError::FailedParseLiteral(LiteralKind::Float), true, reporter);
+                    Expr::Error
+                },
+            }
+        } else if self.matches(TokenType::LiteralInt, lexer_reporter) {
+            let number_token = self.previous.clone();
+            let parsed: Result<i32, _> = number_token.source().parse();
+
+            return match parsed {
+                Ok(number) => Expr::ConstantInt(number, number_token.span()),
+                Err(_) => {
+                    self.error(ParserError::FailedParseLiteral(LiteralKind::Int), true, reporter);
+                    Expr::Error
+                },
+            }
+        } else if self.matches(TokenType::True, lexer_reporter) {
+            return Expr::ConstantBoolean(true, self.previous.span())
+        } else if self.matches(TokenType::False, lexer_reporter) {
+            return Expr::ConstantBoolean(false, self.previous.span())
+        } else if self.matches(TokenType::Identifier, lexer_reporter) || self.matches(TokenType::This, lexer_reporter) {
+            return Expr::Identifier(self.previous.clone())
+        } else if self.matches(TokenType::LiteralString, lexer_reporter) {
+            return Expr::ConstantString(self.previous.source().to_owned(), self.previous.span())
+        } else if self.matches(TokenType::ParenthesisLeft, lexer_reporter) {
+            let expr = self.parse_expression(reporter, lexer_reporter);
+            self.expect(TokenType::ParenthesisRight, ParserError::ExpectedAfter("`)`", "expression", None), reporter, lexer_reporter);
+
+            return expr;
+        } else if self.matches(TokenType::BracketLeft, lexer_reporter) {
+            return self.parse_object_expression(reporter, lexer_reporter);
+        } else if self.matches(TokenType::SquareBracketLeft, lexer_reporter) {
+            return self.parse_array_expression(reporter, lexer_reporter);
+        } else if self.matches(TokenType::Builtin, lexer_reporter) {
+            return self.parse_builtin_call(reporter, lexer_reporter);
+        }
+
+        self.consume(lexer_reporter);
+        self.error(ParserError::ExpectedExpression, true, reporter);
+
+        Expr::Error
+    }
+
+    fn parse_object_expression(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Expr<'source> {
+        let start_pos = self.previous.start.index;
+
+        let mut fields = vec![];
+
+        if !self.check(TokenType::BracketRight) {
+            self.expect(TokenType::LiteralString, ParserError::ExpectedAfter("object field key", "`{`", None), reporter, lexer_reporter);
+            let name = self.previous.clone();
+            self.expect(TokenType::Colon, ParserError::ExpectedAfter("`:`", "object field key", None), reporter, lexer_reporter);
+            let expr = self.parse_expression(reporter, lexer_reporter);
+            fields.push((name, expr));
+
+            while self.matches(TokenType::Comma, lexer_reporter) {
+                if self.check(TokenType::BracketRight) {
+                    break;
+                }
+
+                self.expect(TokenType::LiteralString, ParserError::ExpectedAfter("object field key", "`{`", None), reporter, lexer_reporter);
+                let name = self.previous.clone();
+                self.expect(TokenType::Colon, ParserError::ExpectedAfter("`:`", "object field key", None), reporter, lexer_reporter);
+                let expr = self.parse_expression(reporter, lexer_reporter);
+                fields.push((name, expr));
+            }
+        }
+
+        self.expect(TokenType::BracketRight, ParserError::ExpectedAfter("`}`", "object fields", None), reporter, lexer_reporter);
+        let end_pos = self.previous.end.index;
+
+        Expr::Object { fields, span: Span::new(start_pos, end_pos), }
+    }
+
+    fn parse_array_expression(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Expr<'source> {
+        let start_pos = self.previous.start.index;
+
+        let mut elements = vec![];
+
+        if !self.check(TokenType::SquareBracketRight) {
+            let expr = self.parse_expression(reporter, lexer_reporter);
+            elements.push(expr);
+
+            while self.matches(TokenType::Comma, lexer_reporter) {
+                if self.check(TokenType::SquareBracketRight) {
+                    break;
+                }
+
+                let expr = self.parse_expression(reporter, lexer_reporter);
+                elements.push(expr);
+            }
+        }
+
+        self.expect(TokenType::SquareBracketRight, ParserError::ExpectedAfter("`]`", "array elements", None), reporter, lexer_reporter);
+        let end_pos = self.previous.end.index;
+
+        Expr::Array { elements, span: Span::new(start_pos, end_pos), }
+    }
+
+    fn parse_builtin_call(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Expr<'source> {
+        // let builtin_span = self.previous.span();
+
+        self.expect(TokenType::ColonColon, ParserError::ExpectedAfter("`::`", "`builtin`", None), reporter, lexer_reporter);
+        self.expect(TokenType::Identifier, ParserError::ExpectedAfter("name", "`::`", None), reporter, lexer_reporter);
+        let name = self.previous.clone();
+
+        self.expect(TokenType::ParenthesisLeft, ParserError::ExpectedAfter("`(`", "built-in function name", None), reporter, lexer_reporter);
+        let args_start = self.previous.start.index;
+
+        let mut arguments = vec![];
+
+        if !self.check(TokenType::ParenthesisRight) {
+            arguments.push(self.parse_expression(reporter, lexer_reporter));
+
+            while self.matches(TokenType::Comma, lexer_reporter) {
+                if arguments.len() >= 255 {
+                    self.error_at_current(ParserError::TooManyArguments(arguments.len() as u32), false, reporter);
+                }
+
+                arguments.push(self.parse_expression(reporter, lexer_reporter));
+            }
+        }
+
+        self.expect(TokenType::ParenthesisRight, ParserError::ExpectedAfter("`)`", "built-in function call arguments", None), reporter, lexer_reporter);
+        let args_end = self.previous.end.index;
+
+        Expr::BuiltinFunctionCall { name, args: arguments, args_span: Span::new(args_start, args_end) }
     }
 
     fn consume(&mut self, lexer_reporter: &mut LexerErrorReporter) {
@@ -706,7 +1092,6 @@ impl<'source> Parser<'source> {
 
     fn synchronize(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) {
         reporter.exit_panic_mode();
-        self.consume(lexer_reporter); // DEBUG
 
         while self.current.token_type() != TokenType::Eof {
             if self.previous.token_type() == TokenType::Semicolon {
@@ -733,17 +1118,14 @@ impl<'source> Parser<'source> {
         self.error_at_span(Span::from(&self.current), message, panic, reporter);
     }
 
-    #[allow(unused)]
     fn error(&mut self, message: ParserError, panic: bool, reporter: &mut ParserErrorReporter) {
         self.error_at_span(Span::from(&self.previous), message, panic, reporter);
     }
 
-    #[allow(unused)]
     fn error_at(&mut self, token: &Token<'source>, message: ParserError, panic: bool, reporter: &mut ParserErrorReporter) {
         self.error_at_span(Span::from(token), message, panic, reporter);
     }
 
-    #[allow(unused)]
     fn error_at_span(&mut self, span: Span, message: ParserError, panic: bool, reporter: &mut ParserErrorReporter) {
         Self::error_at_impl(&mut self.had_error, span, message, panic, reporter);
     }
