@@ -15,4 +15,4 @@ lazy_static = "1.4.0"
 line-col = "0.2.1"
 non-empty-vec = "0.2.3"
 termcolor = "1.2.0"
-diagnostic_render = { git = "https://github.com/mschae23/diagnostic_render", tag = "v1.0.1" } # path = "../diagnostic_render" }
+diagnostic_render = { git = "https://github.com/mschae23/diagnostic_render", tag = "v1.0.2" } # path = "../diagnostic_render" }
