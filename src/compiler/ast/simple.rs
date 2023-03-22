@@ -19,7 +19,7 @@ pub enum TypePart<'source> {
 impl<'source> Debug for TypePart<'source> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Name(tokens) => write!(f, "{}", tokens.0.iter().map(|token| token.source().clone()).collect::<Vec<_>>().join("::")),
+            Self::Name(tokens) => write!(f, "{}", tokens.0.iter().map(|token| token.source()).collect::<Vec<_>>().join("::")),
             Self::Template { args, return_type, .. } => write!(f, "({}): {:?}", args.iter()
                 .map(|arg| format!("{:?}", arg)).collect::<Vec<_>>().join(", "), return_type),
         }
@@ -151,13 +151,15 @@ pub enum Expr<'source> {
     ConstantString(String, Span),
     Identifier(Token<'source>),
 
+    Replacement(Span), // `_` token as expression, for type alias conditions
+
     UnaryOperator {
-        operator_span: Span,
+        operator: Token<'source>,
         expr: Box<Expr<'source>>,
     },
     BinaryOperator {
         left: Box<Expr<'source>>,
-        operator_span: Span,
+        operator: Token<'source>,
         right: Box<Expr<'source>>,
     },
     FunctionCall {
@@ -192,6 +194,7 @@ pub enum Expr<'source> {
 
     Object {
         fields: Vec<(Token<'source>, Expr<'source>)>,
+        merge_expr: Option<Box<Expr<'source>>>,
         span: Span,
     },
     Array {

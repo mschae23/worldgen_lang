@@ -1,6 +1,7 @@
+use std::fmt::{Debug, Formatter};
 use crate::compiler::lexer::{Token, TokenPos};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub start: u32, // Uses byte indices
     pub end: u32,
@@ -59,5 +60,11 @@ impl<'source> From<Token<'source>> for Span {
 impl<'source> From<&Token<'source>> for Span {
     fn from(value: &Token<'source>) -> Self {
         Self::new(value.start.index, value.end.index)
+    }
+}
+
+impl Debug for Span {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Span({}..{})", self.start, self.end)
     }
 }

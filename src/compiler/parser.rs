@@ -1,7 +1,7 @@
 use std::fmt::{Display, Formatter};
 use lazy_static::lazy_static;
 use non_empty_vec::ne_vec;
-use crate::compiler::ast::simple::{ClassImplementsPart, Decl, Expr, ParameterPart, SingleImplementsPart, TemplateDeclKind, TemplateExpr, TemplateKind, TypePart, TypeReferencePart, VariableKind};
+use crate::compiler::ast::simple::{ClassImplementsPart, ClassReprPart, Decl, Expr, ParameterPart, SingleImplementsPart, TemplateDeclKind, TemplateExpr, TemplateKind, TypePart, TypeReferencePart, VariableKind};
 use crate::compiler::error::{ErrorReporter, Diagnostic, DiagnosticContext, Severity, NoteKind};
 use crate::compiler::error::span::Span;
 use crate::compiler::lexer::{Lexer, LexerErrorReporter, Token, TokenType};
@@ -227,7 +227,7 @@ impl<'source> Parser<'source> {
         }
 
         self.consume(lexer_reporter);
-        let decl = Decl::Error; // self.parse_statement(reporter, lexer_reporter);
+        let decl = Decl::Error;
 
         if reporter.panic_mode() {
             // eprintln!("[debug] Synchronizing");
@@ -287,13 +287,15 @@ impl<'source> Parser<'source> {
             Some(self.parse_class_implements_part(reporter, lexer_reporter))
         } else { None };
 
-        if self.matches(TokenType::Assign, lexer_reporter) {
-            self.error(ParserError::Unimplemented("interface class representation"), false, reporter);
+        let repr = if self.matches(TokenType::Assign, lexer_reporter) {
+            let repr_start = self.current.start.index;
+            let repr = self.parse_expression(reporter, lexer_reporter);
+            let repr_end = self.previous.end.index;
 
-            while !self.check(TokenType::Semicolon) && !self.check(TokenType::Eof) {
-                self.consume(lexer_reporter);
-            }
-        }
+            Some(ClassReprPart { expr: repr, span: Span::new(repr_start, repr_end), })
+        } else {
+            None
+        };
 
         self.expect_declaration_end(reporter, lexer_reporter);
 
@@ -301,7 +303,7 @@ impl<'source> Parser<'source> {
             name,
             parameters,
             implements,
-            class_repr: None,
+            class_repr: repr,
             parameter_span,
         }
     }
@@ -337,15 +339,15 @@ impl<'source> Parser<'source> {
         self.expect(TokenType::Colon, ParserError::ExpectedAfter("`:`", "`)`", Some(class_span)), reporter, lexer_reporter);
         let implements = self.parse_class_implements_part(reporter, lexer_reporter);
 
-        if self.matches(TokenType::Assign, lexer_reporter) {
-            self.error(ParserError::Unimplemented("class representation"), false, reporter);
+        let repr = if self.matches(TokenType::Assign, lexer_reporter) {
+            let repr_start = self.current.start.index;
+            let repr = self.parse_expression(reporter, lexer_reporter);
+            let repr_end = self.previous.end.index;
 
-            while !self.check(TokenType::Semicolon) && !self.check(TokenType::Eof) {
-                self.consume(lexer_reporter);
-            }
-        }
-
-        let class_repr = None;
+            Some(ClassReprPart { expr: repr, span: Span::new(repr_start, repr_end), })
+        } else {
+            None
+        };
 
         self.expect_declaration_end(reporter, lexer_reporter);
 
@@ -353,7 +355,7 @@ impl<'source> Parser<'source> {
             name,
             parameters,
             implements,
-            class_repr,
+            class_repr: repr,
             parameter_span,
         }
     }
@@ -367,20 +369,16 @@ impl<'source> Parser<'source> {
         self.expect(TokenType::Assign, ParserError::ExpectedAfter("`=`", "type alias name", Some(type_span)), reporter, lexer_reporter);
         let to = self.parse_type_part("`=`", reporter, lexer_reporter);
 
-        if self.matches(TokenType::If, lexer_reporter) {
-            self.error(ParserError::Unimplemented("type alias condition"), false, reporter);
-
-            while !self.check(TokenType::Semicolon) && !self.check(TokenType::Eof) {
-                self.consume(lexer_reporter);
-            }
-        }
+        let condition = if self.matches(TokenType::If, lexer_reporter) {
+            Some(self.parse_expression(reporter, lexer_reporter))
+        } else { None };
 
         self.expect_declaration_end(reporter, lexer_reporter);
 
         Decl::TypeAlias {
             name,
             to,
-            condition: None,
+            condition,
         }
     }
 
@@ -719,10 +717,10 @@ impl<'source> Parser<'source> {
         let mut expr = self.parse_and(reporter, lexer_reporter);
 
         while self.matches(TokenType::ShortcircuitOr, lexer_reporter) {
-            let operator_span = self.previous.span();
+            let operator = self.previous.clone();
             let right = self.parse_and(reporter, lexer_reporter);
 
-            expr = Expr::BinaryOperator { left: Box::new(expr), operator_span, right: Box::new(right) };
+            expr = Expr::BinaryOperator { left: Box::new(expr), operator, right: Box::new(right) };
         }
 
         expr
@@ -732,10 +730,10 @@ impl<'source> Parser<'source> {
         let mut expr = self.parse_equality(reporter, lexer_reporter);
 
         while self.matches(TokenType::ShortcircuitAnd, lexer_reporter) {
-            let operator_span = self.previous.span();
+            let operator = self.previous.clone();
             let right = self.parse_equality(reporter, lexer_reporter);
 
-            expr = Expr::BinaryOperator { left: Box::new(expr), operator_span, right: Box::new(right) };
+            expr = Expr::BinaryOperator { left: Box::new(expr), operator, right: Box::new(right) };
         }
 
         expr
@@ -745,10 +743,10 @@ impl<'source> Parser<'source> {
         let mut expr = self.parse_comparison(reporter, lexer_reporter);
 
         while self.matches_any(&[TokenType::Equal, TokenType::NotEqual], lexer_reporter) {
-            let operator_span = self.previous.span();
+            let operator = self.previous.clone();
             let right = self.parse_comparison(reporter, lexer_reporter);
 
-            expr = Expr::BinaryOperator { left: Box::new(expr), operator_span, right: Box::new(right) };
+            expr = Expr::BinaryOperator { left: Box::new(expr), operator, right: Box::new(right) };
         }
 
         expr
@@ -758,10 +756,10 @@ impl<'source> Parser<'source> {
         let mut expr = self.parse_term(reporter, lexer_reporter);
 
         while self.matches_any(&[TokenType::Less, TokenType::LessEqual, TokenType::Greater, TokenType::GreaterEqual], lexer_reporter) {
-            let operator_span = self.previous.span();
+            let operator = self.previous.clone();
             let right = self.parse_term(reporter, lexer_reporter);
 
-            expr = Expr::BinaryOperator { left: Box::new(expr), operator_span, right: Box::new(right) };
+            expr = Expr::BinaryOperator { left: Box::new(expr), operator, right: Box::new(right) };
         }
 
         expr
@@ -771,10 +769,10 @@ impl<'source> Parser<'source> {
         let mut expr = self.parse_factor(reporter, lexer_reporter);
 
         while self.matches_any(&[TokenType::Plus, TokenType::Minus], lexer_reporter) {
-            let operator_span = self.previous.span();
+            let operator = self.previous.clone();
             let right = self.parse_factor(reporter, lexer_reporter);
 
-            expr = Expr::BinaryOperator { left: Box::new(expr), operator_span, right: Box::new(right) };
+            expr = Expr::BinaryOperator { left: Box::new(expr), operator, right: Box::new(right) };
         }
 
         expr
@@ -784,10 +782,10 @@ impl<'source> Parser<'source> {
         let mut expr = self.parse_unary(reporter, lexer_reporter);
 
         while self.matches_any(&[TokenType::Multiply, TokenType::Divide], lexer_reporter) {
-            let operator_span = self.previous.span();
+            let operator = self.previous.clone();
             let right = self.parse_unary(reporter, lexer_reporter);
 
-            expr = Expr::BinaryOperator { left: Box::new(expr), operator_span, right: Box::new(right) };
+            expr = Expr::BinaryOperator { left: Box::new(expr), operator, right: Box::new(right) };
         }
 
         expr
@@ -795,10 +793,10 @@ impl<'source> Parser<'source> {
 
     fn parse_unary(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Expr<'source> {
         if self.matches_any(&[TokenType::Minus, TokenType::Not], lexer_reporter) {
-            let operator_span = self.previous.span();
+            let operator = self.previous.clone();
             let right = self.parse_unary(reporter, lexer_reporter);
 
-            return Expr::UnaryOperator { operator_span, expr: Box::new(right) };
+            return Expr::UnaryOperator { operator, expr: Box::new(right) };
         }
 
         self.parse_cast(reporter, lexer_reporter)
@@ -908,6 +906,8 @@ impl<'source> Parser<'source> {
             return Expr::ConstantBoolean(true, self.previous.span())
         } else if self.matches(TokenType::False, lexer_reporter) {
             return Expr::ConstantBoolean(false, self.previous.span())
+        } else if self.matches(TokenType::This, lexer_reporter) {
+            return Expr::Identifier(self.previous.clone());
         } else if self.matches(TokenType::Identifier, lexer_reporter) || self.matches(TokenType::This, lexer_reporter) {
             return Expr::Identifier(self.previous.clone())
         } else if self.matches(TokenType::LiteralString, lexer_reporter) {
@@ -921,6 +921,8 @@ impl<'source> Parser<'source> {
             return self.parse_object_expression(reporter, lexer_reporter);
         } else if self.matches(TokenType::SquareBracketLeft, lexer_reporter) {
             return self.parse_array_expression(reporter, lexer_reporter);
+        } else if self.matches(TokenType::Underscore, lexer_reporter) {
+            return Expr::Replacement(self.previous.span());
         } else if self.matches(TokenType::Builtin, lexer_reporter) {
             return self.parse_builtin_call(reporter, lexer_reporter);
         }
@@ -936,30 +938,35 @@ impl<'source> Parser<'source> {
 
         let mut fields = vec![];
 
-        if !self.check(TokenType::BracketRight) {
-            self.expect(TokenType::LiteralString, ParserError::ExpectedAfter("object field key", "`{`", None), reporter, lexer_reporter);
-            let name = self.previous.clone();
-            self.expect(TokenType::Colon, ParserError::ExpectedAfter("`:`", "object field key", None), reporter, lexer_reporter);
-            let expr = self.parse_expression(reporter, lexer_reporter);
-            fields.push((name, expr));
+        loop {
+            if self.check(TokenType::BracketRight) {
+                break;
+            }
 
-            while self.matches(TokenType::Comma, lexer_reporter) {
-                if self.check(TokenType::BracketRight) {
-                    break;
-                }
+            let key = self.parse_expression(reporter, lexer_reporter);
 
-                self.expect(TokenType::LiteralString, ParserError::ExpectedAfter("object field key", "`{`", None), reporter, lexer_reporter);
+            if let Expr::ConstantString(_, _) = &key {
                 let name = self.previous.clone();
+
                 self.expect(TokenType::Colon, ParserError::ExpectedAfter("`:`", "object field key", None), reporter, lexer_reporter);
                 let expr = self.parse_expression(reporter, lexer_reporter);
                 fields.push((name, expr));
+            } else {
+                self.expect(TokenType::BracketRight, ParserError::ExpectedAfter("`}`", "object merge expression", None), reporter, lexer_reporter);
+                let end_pos = self.previous.end.index;
+
+                return Expr::Object { fields, span: Span::new(start_pos, end_pos), merge_expr: Some(Box::new(key)), };
+            }
+
+            if !self.matches(TokenType::Comma, lexer_reporter) {
+                break;
             }
         }
 
         self.expect(TokenType::BracketRight, ParserError::ExpectedAfter("`}`", "object fields", None), reporter, lexer_reporter);
         let end_pos = self.previous.end.index;
 
-        Expr::Object { fields, span: Span::new(start_pos, end_pos), }
+        Expr::Object { fields, span: Span::new(start_pos, end_pos), merge_expr: None, }
     }
 
     fn parse_array_expression(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Expr<'source> {

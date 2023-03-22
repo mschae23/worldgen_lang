@@ -42,7 +42,7 @@ pub fn run() -> Result<(), std::io::Error> {
         pipeline.reporting.print_stderr();
     } else {
         for decl in &pipeline.declarations {
-            eprintln!("{:?}", decl);
+            eprintln!("{:#?}", decl);
         }
     }
 

@@ -102,6 +102,7 @@ pub struct DiagnosticData {
 }
 
 impl DiagnosticData {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(span: Span, stage: CompileStage, name: &'static str, severity: Severity,
                message: String,
                primary_annotation: Option<String>, additional_annotations: Vec<(Span, Option<String>)>,
@@ -165,7 +166,7 @@ impl<'source> ErrorReporting<'source> {
     // Prints with TerminalErrorRenderer
     #[allow(deprecated)]
     pub fn print_simple(&mut self) {
-        let mut renderer = render::TerminalErrorRenderer::new(Rc::clone(&self.config), Rc::clone(&self.path), ColorConfig::Default, &self.source, &self.diagnostics);
+        let mut renderer = render::TerminalErrorRenderer::new(Rc::clone(&self.config), Rc::clone(&self.path), ColorConfig::Default, self.source, &self.diagnostics);
         renderer.render_to_stderr();
     }
 
@@ -176,7 +177,7 @@ impl<'source> ErrorReporting<'source> {
         let mut stream = termcolor::BufferedStandardStream::stderr(termcolor::ColorChoice::Auto);
         let mut renderer = DiagnosticRenderer::new(&mut stream,
             diagnostic_render::render::color::DefaultColorConfig, file, diagnostic_render::render::RenderConfig {
-                surrounding_lines: 1,
+                surrounding_lines: self.config.error_surrounding_lines as usize,
             });
 
         let diagnostics = self.diagnostics.iter()
