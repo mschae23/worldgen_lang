@@ -151,8 +151,6 @@ pub type ParserErrorReporter = ErrorReporter<MessageMarker, ParserError>;
 pub struct Parser<'source> {
     lexer: Lexer<'source>,
     previous: Token<'source>, current: Token<'source>,
-
-    had_error: bool,
 }
 
 impl<'source> Parser<'source> {
@@ -161,12 +159,7 @@ impl<'source> Parser<'source> {
             lexer,
             previous: Token::empty(),
             current: Token::empty(),
-            had_error: false,
         }
-    }
-
-    pub fn had_error(&self) -> bool {
-        self.had_error
     }
 
     // Declaration parsing
@@ -1134,11 +1127,10 @@ impl<'source> Parser<'source> {
     }
 
     fn error_at_span(&mut self, span: Span, message: ParserError, panic: bool, reporter: &mut ParserErrorReporter) {
-        Self::error_at_impl(&mut self.had_error, span, message, panic, reporter);
+        Self::error_at_impl(span, message, panic, reporter);
     }
 
-    fn error_at_impl(had_error: &mut bool, span: Span, message: ParserError, panic: bool, reporter: &mut ParserErrorReporter) {
+    fn error_at_impl(span: Span, message: ParserError, panic: bool, reporter: &mut ParserErrorReporter) {
         reporter.report(span, message, panic);
-        *had_error = true;
     }
 }

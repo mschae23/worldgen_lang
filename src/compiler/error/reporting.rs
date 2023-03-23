@@ -1,11 +1,11 @@
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::rc::Rc;
 use diagnostic_render::diagnostic::AnnotationStyle;
-use diagnostic_render::file::SimpleFile;
+use diagnostic_render::file::SimpleFiles;
 use diagnostic_render::render::DiagnosticRenderer;
-#[allow(deprecated)]
-use crate::compiler::error::render::{self, ColorConfig};
 use crate::compiler::error::span::Span;
 use crate::Config;
 
@@ -40,17 +40,19 @@ impl Annotation {
     }
 }
 
+pub type FileId = u32;
+
 #[derive(Debug)]
 pub struct SubmittedDiagnosticData<M> {
-    pub span: Span,
+    pub path: Rc<PathBuf>, pub span: Span,
     pub message: M,
     pub suppressed_messages: Vec<SubmittedDiagnosticData<M>>,
 }
 
 impl<M> SubmittedDiagnosticData<M> {
-    pub fn new(span: Span, message: M) -> Self {
+    pub fn new(path: Rc<PathBuf>, span: Span, message: M) -> Self {
         SubmittedDiagnosticData {
-            span, message,
+            path, span, message,
             suppressed_messages: Vec::new(),
         }
     }
@@ -58,15 +60,16 @@ impl<M> SubmittedDiagnosticData<M> {
 
 #[derive(Clone, Debug)]
 pub struct DiagnosticContext<'d, D> {
+    pub file_id: FileId,
     pub span: Span,
     pub custom_data: &'d D,
 }
 
 impl<'d, D> DiagnosticContext<'d, D> {
-    pub fn new(span: Span, marker: &'d D) -> Self {
+    pub fn new(file_id: FileId, span: Span, custom_data: &'d D) -> Self {
         DiagnosticContext {
-            span,
-            custom_data: marker,
+            file_id, span,
+            custom_data,
         }
     }
 }
@@ -89,6 +92,7 @@ pub trait Diagnostic<D>: Debug {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiagnosticData {
+    pub file_id: FileId,
     pub span: Span,
     pub stage: CompileStage,
     pub name: &'static str,
@@ -103,14 +107,14 @@ pub struct DiagnosticData {
 
 impl DiagnosticData {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(span: Span, stage: CompileStage, name: &'static str, severity: Severity,
-               message: String,
+    pub fn new(file_id: FileId, span: Span, stage: CompileStage,
+               name: &'static str, severity: Severity, message: String,
                primary_annotation: Option<String>, additional_annotations: Vec<(Span, Option<String>)>,
                primary_note: Option<(NoteKind, String)>, additional_notes: Vec<(NoteKind, String)>,
                suppressed_messages: u32) -> Self {
         DiagnosticData {
-            span, stage, name,
-            severity, message,
+            file_id, span, stage,
+            name, severity, message,
             primary_annotation,
             additional_annotations,
             primary_note, additional_notes,
@@ -119,22 +123,24 @@ impl DiagnosticData {
     }
 }
 
-pub struct ErrorReporting<'source> {
+pub struct ErrorReporting {
     config: Rc<Config>,
-    source: &'source str, path: Rc<PathBuf>,
+    file_ids: HashMap<PathBuf, FileId>,
+    files: Vec<(String, Rc<PathBuf>)>,
     diagnostics: Vec<DiagnosticData>,
 }
 
-impl<'source> ErrorReporting<'source> {
-    pub fn new(config: Rc<Config>, source: &'source str, path: Rc<PathBuf>) -> Self {
+impl ErrorReporting {
+    pub fn new(config: Rc<Config>) -> Self {
         ErrorReporting {
-            config, source, path,
+            config,
+            file_ids: HashMap::new(), files: Vec::new(),
             diagnostics: Vec::new(),
         }
     }
 
-    pub fn create_for_stage<D, M>(&self, stage: CompileStage, marker: D) -> ErrorReporter<D, M> {
-        ErrorReporter::new(stage, marker)
+    pub fn create_for_stage<D, M>(&self, stage: CompileStage, file: Rc<PathBuf>, marker: D) -> ErrorReporter<D, M> {
+        ErrorReporter::new(stage, file, marker)
     }
 
     pub fn submit<D: Default, M: Diagnostic<D>>(&mut self, mut reporter: ErrorReporter<D, M>) {
@@ -144,7 +150,18 @@ impl<'source> ErrorReporting<'source> {
         drop(reporter);
 
         self.diagnostics.extend(diagnostics.into_iter().map(|diagnostic| {
-            let context = DiagnosticContext::new(diagnostic.span, &marker);
+            let file_id = match self.file_ids.entry(diagnostic.path.canonicalize().expect("Failed to canonicalize diagnostic path")) {
+                Entry::Occupied(entry) => *entry.get(),
+                Entry::Vacant(entry) => {
+                    let id: FileId = self.files.len() as u32;
+                    self.files.push((std::fs::read_to_string(entry.key().as_path()).expect("Failed to read source file for error reporting"),
+                        Rc::clone(&diagnostic.path)));
+                    entry.insert(id);
+                    id
+                },
+            };
+
+            let context = DiagnosticContext::new(file_id, diagnostic.span, &marker);
 
             let name: &'static str = diagnostic.message.name();
             let severity = diagnostic.message.severity();
@@ -154,7 +171,7 @@ impl<'source> ErrorReporting<'source> {
             let primary_note = diagnostic.message.primary_note(&context);
             let additional_notes = diagnostic.message.additional_notes(&context);
 
-            DiagnosticData::new(diagnostic.span, stage, name, severity, message,
+            DiagnosticData::new(file_id, diagnostic.span, stage, name, severity, message,
                 primary_annotation, additional_annotations, primary_note, additional_notes, diagnostic.suppressed_messages.len() as u32)
         }));
     }
@@ -163,20 +180,17 @@ impl<'source> ErrorReporting<'source> {
         !self.diagnostics.is_empty()
     }
 
-    // Prints with TerminalErrorRenderer
-    #[allow(deprecated)]
-    pub fn print_simple(&mut self) {
-        let mut renderer = render::TerminalErrorRenderer::new(Rc::clone(&self.config), Rc::clone(&self.path), ColorConfig::Default, self.source, &self.diagnostics);
-        renderer.render_to_stderr();
-    }
-
     // Prints with diagnostic_render
-    pub fn print_stderr(&mut self) {
-        let file = SimpleFile::new(self.path.display().to_string(), self.source);
+    pub fn print_diagnostics_to_stderr(&mut self) {
+        let mut files: SimpleFiles<_, &str> = SimpleFiles::new();
+
+        for (source, path) in self.files.iter() {
+            files.add(path.to_string_lossy(), source);
+        }
 
         let mut stream = termcolor::BufferedStandardStream::stderr(termcolor::ColorChoice::Auto);
         let mut renderer = DiagnosticRenderer::new(&mut stream,
-            diagnostic_render::render::color::DefaultColorConfig, file, diagnostic_render::render::RenderConfig {
+            diagnostic_render::render::color::DefaultColorConfig, files, diagnostic_render::render::RenderConfig {
                 surrounding_lines: self.config.error_surrounding_lines as usize,
             });
 
@@ -187,7 +201,7 @@ impl<'source> ErrorReporting<'source> {
                     Severity::Warning => diagnostic_render::diagnostic::Severity::Warning,
                 }).with_name(diagnostic.name).with_message(&diagnostic.message);
 
-                let mut primary_annotation = diagnostic_render::diagnostic::Annotation::new(AnnotationStyle::Primary, (),
+                let mut primary_annotation = diagnostic_render::diagnostic::Annotation::new(AnnotationStyle::Primary, diagnostic.file_id as usize,
                     diagnostic.span.start as usize..diagnostic.span.end as usize);
 
                 if let Some(label) = diagnostic.primary_annotation.as_ref() {
@@ -197,7 +211,7 @@ impl<'source> ErrorReporting<'source> {
                 d = d.with_annotation(primary_annotation);
 
                 for (span, label) in diagnostic.additional_annotations.iter() {
-                    let mut annotation = diagnostic_render::diagnostic::Annotation::new(AnnotationStyle::Secondary, (),
+                    let mut annotation = diagnostic_render::diagnostic::Annotation::new(AnnotationStyle::Secondary, diagnostic.file_id as usize,
                         span.start as usize..span.end as usize);
 
                     if let Some(label) = label.as_ref() {
@@ -218,15 +232,17 @@ pub struct ErrorReporter<D, M> {
     stage: CompileStage,
     pub custom_data: D,
     diagnostics: Vec<SubmittedDiagnosticData<M>>,
+    current_file: Rc<PathBuf>,
     panic_mode: bool,
 }
 
 impl<D, M> ErrorReporter<D, M> {
-    fn new(stage: CompileStage, marker: D) -> Self {
+    fn new(stage: CompileStage, file: Rc<PathBuf>, marker: D) -> Self {
         ErrorReporter {
             stage,
             custom_data: marker,
             diagnostics: Vec::new(),
+            current_file: file,
             panic_mode: false,
         }
     }
@@ -242,14 +258,18 @@ impl<D, M> ErrorReporter<D, M> {
     pub fn report(&mut self, span: Span, message: M, panic: bool) { // panic is unrelated to a Rust "panic!"
         if self.panic_mode {
             self.diagnostics.last_mut().expect("Error reporter is in panic mode, but there are no errors")
-                .suppressed_messages.push(SubmittedDiagnosticData::new(span, message));
+                .suppressed_messages.push(SubmittedDiagnosticData::new(Rc::clone(&self.current_file), span, message));
         } else {
-            self.diagnostics.push(SubmittedDiagnosticData::new(span, message));
+            self.diagnostics.push(SubmittedDiagnosticData::new(Rc::clone(&self.current_file), span, message));
 
             if panic {
                 self.panic_mode = true;
             }
         }
+    }
+
+    pub fn set_current_file(&mut self, file: Rc<PathBuf>) {
+        self.current_file = file;
     }
 
     pub fn panic_mode(&self) -> bool {

@@ -4,6 +4,7 @@ pub mod compiler;
 use std::path::PathBuf;
 use std::rc::Rc;
 use clap::Parser as ClapParser;
+use crate::compiler::error::ErrorReporting;
 use crate::compiler::pipeline::CompileState;
 
 #[derive(ClapParser, Debug)]
@@ -28,18 +29,21 @@ pub struct Config {
 pub fn run() -> Result<(), std::io::Error> {
     let config: Rc<Config> = Rc::new(Config::parse());
 
-    let source = std::fs::read_to_string(&config.input)?;
-    let mut pipeline = CompileState::new(Rc::clone(&config), &source)
+    let mut reporting = ErrorReporting::new(Rc::clone(&config));
+
+    let input = Rc::new(config.input.clone());
+    let source = std::fs::read_to_string(input.as_path())?;
+    let pipeline = CompileState::new(Rc::clone(&config), &source, Rc::clone(&input))
         .tokenize()
-        .parse();
+        .parse(&mut reporting);
 
     // compile
 
     std::fs::create_dir_all(&config.target_dir)?;
     // let mut writer = JsonWriter::new(config.indentation.to_owned(), !config.no_pretty_print);
 
-    if pipeline.reporting.has_diagnostics() {
-        pipeline.reporting.print_stderr();
+    if reporting.has_diagnostics() {
+        reporting.print_diagnostics_to_stderr();
     } else {
         for decl in &pipeline.declarations {
             eprintln!("{:#?}", decl);
