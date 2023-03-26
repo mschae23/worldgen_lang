@@ -7,6 +7,7 @@ use crate::util;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TokenPos {
     pub line: i32,
+    // TODO Remove; line and column number information is no longer needed with the diagnostic renderer
     pub column: i32,
     pub index: u32,
 }
@@ -81,7 +82,7 @@ pub struct Token<'source> {
 }
 
 impl<'source> Token<'source> {
-    pub fn new(token_type: TokenType, source: &'source str, start: TokenPos, end: TokenPos) -> Token<'source> {
+    pub fn new(token_type: TokenType, source: &'source str, start: TokenPos, end: TokenPos) -> Self {
         Token {
             token_type, source,
             start, end

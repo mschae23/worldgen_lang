@@ -33,9 +33,10 @@ pub fn run() -> Result<(), std::io::Error> {
 
     let input = Rc::new(config.input.clone());
     let source = std::fs::read_to_string(input.as_path())?;
-    let pipeline = CompileState::new(Rc::clone(&config), &source, Rc::clone(&input))
+    let _pipeline = CompileState::new(Rc::clone(&config), &source, Rc::clone(&input))
         .tokenize()
-        .parse(&mut reporting);
+        .parse(&mut reporting)
+        .check_types(&mut reporting);
 
     // compile
 
@@ -45,9 +46,9 @@ pub fn run() -> Result<(), std::io::Error> {
     if reporting.has_diagnostics() {
         reporting.print_diagnostics_to_stderr();
     } else {
-        for decl in &pipeline.declarations {
-            eprintln!("{:#?}", decl);
-        }
+        // for decl in &pipeline.declarations {
+        //     eprintln!("{:#?}", decl);
+        // }
     }
 
     Ok(())

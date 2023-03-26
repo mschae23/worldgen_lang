@@ -14,6 +14,7 @@ use crate::Config;
 pub enum CompileStage {
     Lexer,
     Parser,
+    TypeChecker,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

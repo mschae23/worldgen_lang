@@ -145,8 +145,8 @@ pub enum TemplateExpr<'source> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr<'source> {
-    ConstantFloat(f64, Span),
     ConstantInt(i32, Span),
+    ConstantFloat(f64, Span),
     ConstantBoolean(bool, Span),
     ConstantString(String, Span),
     Identifier(Token<'source>),

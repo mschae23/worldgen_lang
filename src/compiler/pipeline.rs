@@ -4,6 +4,7 @@ use crate::compiler::ast::simple::Decl;
 use crate::compiler::error::{CompileStage, ErrorReporting};
 use crate::compiler::lexer::Lexer;
 use crate::compiler::parser::Parser;
+use crate::compiler::type_checker::TypeChecker;
 use crate::Config;
 
 impl CompileState {
@@ -47,15 +48,36 @@ impl<'source> TokenizedState<'source> {
         reporting.submit(parser_reporter);
 
         ParsedState {
-            config: self.config,
+            config: self.config, input: self.input,
             declarations,
         }
     }
 }
 
 pub struct ParsedState<'source> {
-    pub config: Rc<Config>,
+    pub config: Rc<Config>, input: Rc<PathBuf>,
     pub declarations: Vec<Decl<'source>>,
+}
+
+impl<'source> ParsedState<'source> {
+    pub fn check_types(self, reporting: &mut ErrorReporting) -> TypeCheckedState {
+        let mut reporter = reporting.create_for_stage(CompileStage::TypeChecker,  Rc::clone(&self.input), ());
+
+        let mut type_checker = TypeChecker::new(Rc::clone(&self.config));
+        type_checker.check_types(self.declarations, &mut reporter);
+
+        reporting.submit(reporter);
+
+        TypeCheckedState {
+            config: self.config, input: self.input,
+        }
+
+    }
+}
+
+pub struct TypeCheckedState {
+    pub config: Rc<Config>, input: Rc<PathBuf>,
+    // TODO Result from type checker
 }
 
 pub struct CompileState {
