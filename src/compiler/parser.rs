@@ -1,7 +1,7 @@
 use std::fmt::{Display, Formatter};
 use lazy_static::lazy_static;
 use non_empty_vec::ne_vec;
-use crate::compiler::ast::simple::{ClassImplementsPart, ClassReprPart, Decl, Expr, ParameterPart, SingleImplementsPart, TemplateDeclKind, TemplateExpr, TemplateKind, TypePart, TypeReferencePart, VariableKind};
+use crate::compiler::ast::simple::{ClassImplementsPart, ClassReprPart, Decl, Expr, ParameterPart, PrimitiveTypeKind, SingleImplementsPart, TemplateDeclKind, TemplateExpr, TemplateKind, TypePart, TypeReferencePart, VariableKind};
 use crate::compiler::error::{ErrorReporter, Diagnostic, DiagnosticContext, Severity, NoteKind};
 use crate::compiler::error::span::Span;
 use crate::compiler::lexer::{Lexer, LexerErrorReporter, Token, TokenType};
@@ -23,7 +23,7 @@ lazy_static! {
         TokenType::Boolean,
         TokenType::String,
         TokenType::Object, TokenType::Array,
-        TokenType::Module,
+        TokenType::Type,
         TokenType::Identifier,
         TokenType::Underscore,
     ];
@@ -578,6 +578,18 @@ impl<'source> Parser<'source> {
             }
         } else {
             self.expect_any(&*ALLOWED_VARIABLE_TYPES, ParserError::ExpectedAfter("type name", "`:`", None), reporter, lexer_reporter);
+
+            match self.previous.token_type() {
+                TokenType::Int => return TypePart::Primitive(PrimitiveTypeKind::Int, self.previous.span()),
+                TokenType::Float => return TypePart::Primitive(PrimitiveTypeKind::Float, self.previous.span()),
+                TokenType::Boolean => return TypePart::Primitive(PrimitiveTypeKind::Boolean, self.previous.span()),
+                TokenType::String => return TypePart::Primitive(PrimitiveTypeKind::String, self.previous.span()),
+                TokenType::Object => return TypePart::Primitive(PrimitiveTypeKind::Object, self.previous.span()),
+                TokenType::Array => return TypePart::Primitive(PrimitiveTypeKind::Array, self.previous.span()),
+                TokenType::Type => return TypePart::Primitive(PrimitiveTypeKind::Type, self.previous.span()),
+                _ => {},
+            }
+
             TypePart::Name(self.parse_type_reference_part(reporter, lexer_reporter))
         }
     }

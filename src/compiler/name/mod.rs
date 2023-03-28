@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use crate::compiler::ast::simple::{PrimitiveTypeKind, TypePart, TypeReferencePart};
 use crate::compiler::error::FileId;
 use crate::compiler::error::span::Span;
 
@@ -20,11 +21,6 @@ impl PositionedName {
 
 pub type TypeId = usize;
 
-#[derive(Clone, Copy, Debug)]
-pub enum PrimitiveTypeKind {
-    Int, Float, Boolean, String, Object, Array, Type,
-}
-
 #[derive(Debug)]
 pub enum SimpleTypeInfo {
     Primitive {
@@ -34,6 +30,7 @@ pub enum SimpleTypeInfo {
         interface: bool,
     },
     TypeAlias,
+    Template,
 }
 
 pub const INT_TYPE_ID: TypeId = 0;
@@ -46,11 +43,11 @@ pub const TYPE_TYPE_ID: TypeId = 6;
 pub const PRIMITIVE_TYPE_COUNT: usize = 7;
 
 #[derive(Debug)]
-struct TypeStorage {
+pub struct TypeStorage {
     types: Vec<SimpleTypeInfo>,
     type_id_lookup: HashMap<PathBuf, TypeId>,
-    type_path_lookup: Vec<PathBuf>,
-    type_span_lookup: Vec<(Span, FileId)>,
+    type_path_lookup: Vec<Option<PathBuf>>,
+    type_span_lookup: Vec<Option<(Span, FileId)>>,
 }
 
 impl TypeStorage {
@@ -75,27 +72,53 @@ impl TypeStorage {
         self.types.get(type_id)
     }
 
+    pub fn get_path(&self, type_id: TypeId) -> Option<&Path> {
+        if type_id < PRIMITIVE_TYPE_COUNT {
+            None
+        } else {
+            self.type_path_lookup.get(type_id - PRIMITIVE_TYPE_COUNT).and_then(|path| path.as_ref().map(|path| path.as_path()))
+        }
+    }
+
     pub fn get_type_id_by_path<P: AsRef<Path>>(&self, path: P) -> Option<TypeId> {
         fn _get_by_path_impl(this: &TypeStorage, path: &Path) -> Option<TypeId> {
-            this.type_id_lookup.get(path).map(|&id| id)
+            this.type_id_lookup.get(path).copied()
         }
 
         _get_by_path_impl(self, path.as_ref())
     }
 
-    pub fn get_path(&self, type_id: TypeId) -> Option<&Path> {
-        if type_id < PRIMITIVE_TYPE_COUNT {
-            None
-        } else {
-            self.type_path_lookup.get(type_id - PRIMITIVE_TYPE_COUNT).map(|path| path.as_path())
+    pub fn get_type_id_by_type_part(&mut self, prefix: &Path, part: &TypePart) -> Option<TypeId> {
+        match part {
+            TypePart::Primitive(kind, _) => Some(match kind {
+                PrimitiveTypeKind::Int => INT_TYPE_ID,
+                PrimitiveTypeKind::Float => FLOAT_TYPE_ID,
+                PrimitiveTypeKind::Boolean => BOOLEAN_TYPE_ID,
+                PrimitiveTypeKind::String => STRING_TYPE_ID,
+                PrimitiveTypeKind::Object => OBJECT_TYPE_ID,
+                PrimitiveTypeKind::Array => ARRAY_TYPE_ID,
+                PrimitiveTypeKind::Type => TYPE_TYPE_ID,
+            }),
+            TypePart::Name(name) => self.get_type_id_by_type_reference_part(prefix, name),
+            TypePart::Template { .. } => {
+                let id = self.types.len();
+                self.types.push(SimpleTypeInfo::Template);
+                self.type_path_lookup.push(None);
+                self.type_span_lookup.push(None);
+                Some(id)
+            },
         }
+    }
+
+    pub fn get_type_id_by_type_reference_part(&self, prefix: &Path, part: &TypeReferencePart) -> Option<TypeId> {
+        self.get_type_id_by_path([prefix, &part.0.iter().map(|token| token.source()).collect::<PathBuf>()].into_iter().collect::<PathBuf>())
     }
 
     pub fn get_span(&self, type_id: TypeId) -> Option<(Span, FileId)> {
         if type_id < PRIMITIVE_TYPE_COUNT {
             None
         } else {
-            self.type_span_lookup.get(type_id - PRIMITIVE_TYPE_COUNT).map(|&(span, file)| (span, file))
+            self.type_span_lookup.get(type_id - PRIMITIVE_TYPE_COUNT).and_then(|span| span.as_ref().map(|&(span, file)| (span, file)))
         }
     }
 
@@ -105,8 +128,8 @@ impl TypeStorage {
         self.types.push(type_info);
         // TODO Is this clone okay? Maybe use Rc?
         self.type_id_lookup.insert(path.clone(), id);
-        self.type_path_lookup.push(path);
-        self.type_span_lookup.push((span, file_id));
+        self.type_path_lookup.push(Some(path));
+        self.type_span_lookup.push(Some((span, file_id)));
 
         id
     }
@@ -119,31 +142,56 @@ impl Default for TypeStorage {
 }
 
 #[derive(Debug)]
+pub struct SimpleDeclStorage {
+    decls: Vec<SimpleDecl>,
+}
+
+impl SimpleDeclStorage {
+    pub fn new() -> Self {
+        SimpleDeclStorage {
+            decls: Vec::new(),
+        }
+    }
+
+    pub fn insert(&mut self, decl: SimpleDecl) {
+        self.decls.push(decl);
+    }
+}
+
+impl Default for SimpleDeclStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug)]
 pub struct NameResolution {
     types: TypeStorage,
+    decls: SimpleDeclStorage,
 }
 
 impl NameResolution {
     pub fn new() -> Self {
         NameResolution {
             types: TypeStorage::new(),
+            decls: SimpleDeclStorage::new(),
         }
     }
 
-    pub fn insert_simple_type(&mut self, path: PathBuf, span: Span, file_id: FileId, type_info: SimpleTypeInfo) -> TypeId {
-        self.types.insert(path, span, file_id, type_info)
+    pub fn get_simple_types(&self) -> &TypeStorage {
+        &self.types
     }
 
-    pub fn get_simple_type(&self, type_id: TypeId) -> Option<&SimpleTypeInfo> {
-        self.types.get(type_id)
+    pub fn get_simple_types_mut(&mut self) -> &mut TypeStorage {
+        &mut self.types
     }
 
-    pub fn get_simple_type_id_by_path<P: AsRef<Path>>(&self, path: P) -> Option<TypeId> {
-        self.types.get_type_id_by_path(path)
+    pub fn get_simple_decls(&self) -> &SimpleDeclStorage {
+        &self.decls
     }
 
-    pub fn get_simple_type_span(&self, type_id: TypeId) -> Option<(Span, FileId)> {
-        self.types.get_span(type_id)
+    pub fn get_simple_decls_mut(&mut self) -> &mut SimpleDeclStorage {
+        &mut self.decls
     }
 }
 
@@ -154,13 +202,13 @@ impl Default for NameResolution {
 }
 
 #[derive(Debug)]
-struct SimpleModuleDecl {
+pub struct SimpleModuleDecl {
     pub name: PositionedName,
     pub declarations: HashMap<String, SimpleDecl>,
 }
 
 #[derive(Debug)]
-struct SimpleClassDecl {
+pub struct SimpleClassDecl {
     pub name: PositionedName,
     pub type_id: TypeId,
     pub interface: bool,
@@ -168,7 +216,28 @@ struct SimpleClassDecl {
 }
 
 #[derive(Debug)]
-enum SimpleDecl {
+pub struct SimpleTypeAliasDecl {
+    pub name: PositionedName,
+    pub type_id: TypeId,
+}
+
+#[derive(Debug)]
+pub enum SimpleDecl {
     Module(SimpleModuleDecl),
     Class(SimpleClassDecl),
+    TypeAlias(SimpleTypeAliasDecl),
+}
+
+impl SimpleDecl {
+    pub fn name(&self) -> &PositionedName {
+        match self {
+            Self::Module(decl) => &decl.name,
+            Self::Class(decl) => &decl.name,
+            Self::TypeAlias(decl) => &decl.name,
+        }
+    }
+
+    pub fn span(&self) -> Span {
+        self.name().span
+    }
 }

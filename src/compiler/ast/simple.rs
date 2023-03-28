@@ -1,13 +1,33 @@
-use std::fmt::{Debug, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 use non_empty_vec::NonEmpty;
 use crate::compiler::error::span::Span;
 use crate::compiler::lexer::Token;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrimitiveTypeKind {
+    Int, Float, Boolean, String, Object, Array, Type,
+}
+
+impl Display for PrimitiveTypeKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PrimitiveTypeKind::Int => write!(f, "int"),
+            PrimitiveTypeKind::Float => write!(f, "float"),
+            PrimitiveTypeKind::Boolean => write!(f, "boolean"),
+            PrimitiveTypeKind::String => write!(f, "string"),
+            PrimitiveTypeKind::Object => write!(f, "object"),
+            PrimitiveTypeKind::Array => write!(f, "array"),
+            PrimitiveTypeKind::Type => write!(f, "type"),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeReferencePart<'source>(pub NonEmpty<Token<'source>>, pub Span);
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum TypePart<'source> {
+    Primitive(PrimitiveTypeKind, Span),
     Name(TypeReferencePart<'source>),
     Template {
         args: Vec<TypePart<'source>>,
@@ -16,9 +36,20 @@ pub enum TypePart<'source> {
     },
 }
 
+impl<'source> TypePart<'source> {
+    pub fn span(&self) -> Span {
+        match self {
+            TypePart::Primitive(_, span) => *span,
+            TypePart::Name(name) => name.1,
+            TypePart::Template { return_type, args_span, .. } => args_span.merge(return_type.span()),
+        }
+    }
+}
+
 impl<'source> Debug for TypePart<'source> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Primitive(kind, _) => write!(f, "{}", kind),
             Self::Name(tokens) => write!(f, "{}", tokens.0.iter().map(|token| token.source()).collect::<Vec<_>>().join("::")),
             Self::Template { args, return_type, .. } => write!(f, "({}): {:?}", args.iter()
                 .map(|arg| format!("{:?}", arg)).collect::<Vec<_>>().join(", "), return_type),

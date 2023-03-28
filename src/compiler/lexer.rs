@@ -440,13 +440,8 @@ impl<'source> Lexer<'source> {
             'm' => Lexer::check_keyword(name, 1, "module", TokenType::Module),
             'o' => if let Some(c) = chars.next() {
                 match c {
-                    'p' => if let Some(c) = chars.next() {
-                        match c {
-                            'j' => Lexer::check_keyword(name, 3, "object", TokenType::Object),
-                            't' => Lexer::check_keyword(name, 3, "optimize", TokenType::Optimize),
-                            _ => TokenType::Identifier,
-                        }
-                    } else { TokenType::Identifier },
+                    'b' => Lexer::check_keyword(name, 2, "object", TokenType::Object),
+                    'p' => Lexer::check_keyword(name, 2, "optimize", TokenType::Optimize),
                     _ => TokenType::Identifier,
                 }
             } else { TokenType::Identifier },
