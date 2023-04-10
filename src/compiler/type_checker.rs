@@ -2,11 +2,11 @@ use std::collections::{HashMap, VecDeque};
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 use std::rc::Rc;
-use crate::compiler::ast::simple::Decl;
+use crate::compiler::ast::simple::{Decl, TemplateKind};
 use crate::compiler::ast::typed::TypedDecl;
 use crate::compiler::error::{Diagnostic, DiagnosticContext, ErrorReporter, FileId, NoteKind, Severity};
 use crate::compiler::error::span::Span;
-use crate::compiler::name::{NameResolution, PositionedName, SimpleClassDecl, SimpleDecl, SimpleModuleDecl, SimpleTypeAliasDecl, SimpleTypeInfo};
+use crate::compiler::name::{NameResolution, PositionedName, SimpleClassDecl, SimpleDecl, SimpleModuleDecl, SimpleTypeAliasDecl, SimpleTypeInfo, SimpleUnnamedTemplateData, SimpleUnnamedTemplateDecl};
 use crate::Config;
 
 pub type MessageMarker = ();
@@ -75,14 +75,15 @@ pub type TypeErrorReporter<'source> = ErrorReporter<MessageMarker, TypeError<'so
 
 pub struct TypeChecker {
     _config: Rc<Config>,
+    path: Rc<PathBuf>, file_id: FileId,
 
     names: NameResolution,
 }
 
 impl<'source> TypeChecker {
-    pub fn new(config: Rc<Config>) -> Self {
+    pub fn new(config: Rc<Config>, path: Rc<PathBuf>, file_id: FileId) -> Self {
         TypeChecker {
-            _config: config,
+            _config: config, path, file_id,
             names: NameResolution::new(),
         }
     }
@@ -90,6 +91,8 @@ impl<'source> TypeChecker {
     pub fn check_types(&mut self, declarations: Vec<Decl<'source>>, reporter: &mut TypeErrorReporter<'source>) -> Vec<TypedDecl<'source>> {
         self.declare_types(&declarations, reporter);
         self.declare_declarations(&declarations, reporter);
+
+        eprintln!("[debug] Name resolution state:\n{:#?}", &self.names);
 
         let /* mut */ typed_declarations = Vec::new();
 
@@ -126,7 +129,7 @@ impl<'source> TypeChecker {
                                 let previous_span = self.names.get_simple_types().get_span(previous_id);
                                 self.error(name.span(), TypeError::TypeAlreadyDeclared(name.source(), previous_span.map(|(span, _)| span)), reporter);
                             } else {
-                                self.names.get_simple_types_mut().insert(path.clone(), name.span(), /* TODO */ 0, SimpleTypeInfo::Class { interface: true, });
+                                self.names.get_simple_types_mut().insert(path.clone(), name.span(), self.file_id, SimpleTypeInfo::Class { interface: true, });
                             }
 
                             path.pop();
@@ -138,7 +141,7 @@ impl<'source> TypeChecker {
                                 let previous_span = self.names.get_simple_types().get_span(previous_id);
                                 self.error(name.span(), TypeError::TypeAlreadyDeclared(name.source(), previous_span.map(|(span, _)| span)), reporter);
                             } else {
-                                self.names.get_simple_types_mut().insert(path.clone(), name.span(), 0, SimpleTypeInfo::Class { interface: false, });
+                                self.names.get_simple_types_mut().insert(path.clone(), name.span(), self.file_id, SimpleTypeInfo::Class { interface: false, });
                             }
 
                             path.pop();
@@ -150,7 +153,7 @@ impl<'source> TypeChecker {
                                 let previous_span = self.names.get_simple_types().get_span(previous_id);
                                 self.error(name.span(), TypeError::TypeAlreadyDeclared(name.source(), previous_span.map(|(span, _)| span)), reporter);
                             } else {
-                                self.names.get_simple_types_mut().insert(path.clone(), name.span(), 0, SimpleTypeInfo::TypeAlias);
+                                self.names.get_simple_types_mut().insert(path.clone(), name.span(), self.file_id, SimpleTypeInfo::TypeAlias);
                             }
 
                             path.pop();
@@ -178,8 +181,9 @@ impl<'source> TypeChecker {
 
         let mut to_process = decls.iter().map(ProcessVariant::Decl).collect::<VecDeque<_>>();
         let mut decl_stack = vec![SimpleModuleDecl {
-            name: PositionedName::new(String::from("<global>"), 0, Span::new(0, 0)),
+            name: PositionedName::new(String::from("<global>"), self.file_id, Span::new(0, 0)),
             declarations: HashMap::new(),
+            unnamed_templates: Vec::new(),
         }];
         let mut path = PathBuf::new();
 
@@ -188,7 +192,7 @@ impl<'source> TypeChecker {
                 ProcessVariant::Decl(decl) => {
                     match decl {
                         Decl::Module { name, declarations } => {
-                            to_process.push_back(ProcessVariant::ModuleStart(name.source(), /* TODO */ 0, name.span()));
+                            to_process.push_back(ProcessVariant::ModuleStart(name.source(), self.file_id, name.span()));
                             to_process.extend(declarations.iter().map(ProcessVariant::Decl));
                             to_process.push_back(ProcessVariant::ModuleEnd);
                         },
@@ -210,11 +214,11 @@ impl<'source> TypeChecker {
                                                 Some(id) => id,
                                             };
 
-                                            (PositionedName::new(part.name.source().to_owned(), /* TODO */ 0, part.name.span()), type_id)
+                                            (PositionedName::new(part.name.source().to_owned(), self.file_id, part.name.span()), type_id)
                                         }).collect();
 
                                         entry.insert(SimpleDecl::Class(SimpleClassDecl {
-                                            name: PositionedName::new(name.source().to_owned(), /* TODO */ 0, name.span()),
+                                            name: PositionedName::new(name.source().to_owned(), self.file_id, name.span()),
                                             type_id: self.names.get_simple_types().get_type_id_by_path(&path).expect("Bug in compiler: Type for declaration does not exist"),
                                             interface: true,
                                             parameters,
@@ -243,11 +247,11 @@ impl<'source> TypeChecker {
                                                 Some(id) => id,
                                             };
 
-                                            (PositionedName::new(part.name.source().to_owned(), /* TODO */ 0, part.name.span()), type_id)
+                                            (PositionedName::new(part.name.source().to_owned(), self.file_id, part.name.span()), type_id)
                                         }).collect();
 
                                         entry.insert(SimpleDecl::Class(SimpleClassDecl {
-                                            name: PositionedName::new(name.source().to_owned(), /* TODO */ 0, name.span()),
+                                            name: PositionedName::new(name.source().to_owned(), self.file_id, name.span()),
                                             type_id: self.names.get_simple_types().get_type_id_by_path(&path).expect("Bug in compiler: Type for declaration does not exist"),
                                             interface: false,
                                             parameters,
@@ -268,7 +272,7 @@ impl<'source> TypeChecker {
                                     },
                                     Entry::Vacant(entry) => {
                                         entry.insert(SimpleDecl::TypeAlias(SimpleTypeAliasDecl {
-                                            name: PositionedName::new(name.source().to_owned(), /* TODO */ 0, name.span()),
+                                            name: PositionedName::new(name.source().to_owned(), self.file_id, name.span()),
                                             type_id: self.names.get_simple_types().get_type_id_by_path(&path).expect("Bug in compiler: Type for declaration does not exist"),
                                         }));
                                     },
@@ -277,8 +281,46 @@ impl<'source> TypeChecker {
 
                             path.pop();
                         },
+                        Decl::Template { kind, .. } => {
+                            match kind {
+                                TemplateKind::Template { name } => {
+                                    path.push(name.source());
+
+                                    if let Some(top_module) = decl_stack.last_mut() {
+                                        match top_module.declarations.entry(name.source().to_owned()) {
+                                            Entry::Occupied(entry) => {
+                                                self.error(name.span(), TypeError::DeclAlreadyDeclared(name.source(), Some(entry.get().span())), reporter);
+                                            },
+                                            Entry::Vacant(_entry) => {
+                                                // TODO
+                                                // entry.insert(SimpleDecl::Template);
+                                            },
+                                        };
+                                    }
+
+                                    path.pop();
+                                },
+                                TemplateKind::Conversion { span } => {
+                                    if let Some(top_module) = decl_stack.last_mut() {
+                                        top_module.unnamed_templates.push(SimpleUnnamedTemplateDecl {
+                                            name_span: *span,
+                                            data: SimpleUnnamedTemplateData::Conversion {
+                                            },
+                                        });
+                                    }
+                                },
+                                TemplateKind::Optimize { on } => {
+                                    if let Some(top_module) = decl_stack.last_mut() {
+                                        top_module.unnamed_templates.push(SimpleUnnamedTemplateDecl {
+                                            name_span: on.span(),
+                                            data: SimpleUnnamedTemplateData::Optimize {
+                                            },
+                                        });
+                                    }
+                                },
+                            }
+                        },
                         // TODO
-                        Decl::Template { .. } => {},
                         Decl::Variable { .. } => {},
                         // These don't need forward declarations
                         Decl::Import { .. } => {},
@@ -291,6 +333,7 @@ impl<'source> TypeChecker {
                     decl_stack.push(SimpleModuleDecl {
                         name: PositionedName::new(name.to_owned(), file_id, span),
                         declarations: HashMap::new(),
+                        unnamed_templates: Vec::new(),
                     })
                 },
                 ProcessVariant::ModuleEnd => {
@@ -300,6 +343,7 @@ impl<'source> TypeChecker {
                     let top = decl_stack.pop().expect("Compiler bug: Last module does not exist");
 
                     if let Some(next_top_module) = decl_stack.get_mut(previous_len - 2) {
+                        // TODO Fix multiple module decls with the same name being allowed, but overriding the last one
                         next_top_module.declarations.insert(top.name.source.clone(), SimpleDecl::Module(top));
                     }
                 },
@@ -311,8 +355,6 @@ impl<'source> TypeChecker {
         for (_, decl) in decl_stack.pop().expect("No module in decl stack despite previous check").declarations {
             self.names.get_simple_decls_mut().insert(decl);
         }
-
-        eprintln!("[debug] Name resolution state:\n{:#?}", &self.names);
     }
 
     fn error(&self, span: Span, message: TypeError<'source>, reporter: &mut TypeErrorReporter<'source>) {

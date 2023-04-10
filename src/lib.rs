@@ -29,11 +29,13 @@ pub struct Config {
 pub fn run() -> Result<(), std::io::Error> {
     let config: Rc<Config> = Rc::new(Config::parse());
 
-    let mut reporting = ErrorReporting::new(Rc::clone(&config));
+    let working_dir = std::env::current_dir()?.canonicalize()?;
+    let mut reporting = ErrorReporting::new(Rc::clone(&config), working_dir);
 
     let input = Rc::new(config.input.clone());
     let source = std::fs::read_to_string(input.as_path())?;
-    let _pipeline = CompileState::new(Rc::clone(&config), &source, Rc::clone(&input))
+    let _pipeline = CompileState::new(Rc::clone(&config), &source,
+        Rc::clone(&input), reporting.get_file_id(Rc::clone(&input), std::fs::read_to_string(&*input)?)?)
         .tokenize()
         .parse(&mut reporting)
         .check_types(&mut reporting);

@@ -1,4 +1,3 @@
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::path::PathBuf;
@@ -45,15 +44,15 @@ pub type FileId = u32;
 
 #[derive(Debug)]
 pub struct SubmittedDiagnosticData<M> {
-    pub path: Rc<PathBuf>, pub span: Span,
+    pub file_id: FileId, pub span: Span,
     pub message: M,
     pub suppressed_messages: Vec<SubmittedDiagnosticData<M>>,
 }
 
 impl<M> SubmittedDiagnosticData<M> {
-    pub fn new(path: Rc<PathBuf>, span: Span, message: M) -> Self {
+    pub fn new(file_id: FileId, span: Span, message: M) -> Self {
         SubmittedDiagnosticData {
-            path, span, message,
+            file_id, span, message,
             suppressed_messages: Vec::new(),
         }
     }
@@ -125,23 +124,34 @@ impl DiagnosticData {
 }
 
 pub struct ErrorReporting {
-    config: Rc<Config>,
-    file_ids: HashMap<PathBuf, FileId>,
+    config: Rc<Config>, working_dir: PathBuf,
+    file_ids: HashMap<Rc<PathBuf>, FileId>,
     files: Vec<(String, Rc<PathBuf>)>,
     diagnostics: Vec<DiagnosticData>,
 }
 
 impl ErrorReporting {
-    pub fn new(config: Rc<Config>) -> Self {
+    pub fn new(config: Rc<Config>, working_dir: PathBuf) -> Self {
         ErrorReporting {
-            config,
+            config, working_dir,
             file_ids: HashMap::new(), files: Vec::new(),
             diagnostics: Vec::new(),
         }
     }
 
-    pub fn create_for_stage<D, M>(&self, stage: CompileStage, file: Rc<PathBuf>, marker: D) -> ErrorReporter<D, M> {
-        ErrorReporter::new(stage, file, marker)
+    pub fn get_file_id(&mut self, path: Rc<PathBuf>, source: String) -> Result<FileId, std::io::Error> {
+        let next_id: FileId = self.files.len() as u32;
+        let canonicalized = Rc::new(path.canonicalize()?);
+
+        Ok(*self.file_ids.entry(Rc::clone(&canonicalized)).or_insert_with(|| {
+            self.files.push((source, canonicalized));
+
+            next_id
+        }))
+    }
+
+    pub fn create_for_stage<D, M>(&self, stage: CompileStage, file_id: FileId, marker: D) -> ErrorReporter<D, M> {
+        ErrorReporter::new(stage, file_id, marker)
     }
 
     pub fn submit<D: Default, M: Diagnostic<D>>(&mut self, mut reporter: ErrorReporter<D, M>) {
@@ -151,18 +161,7 @@ impl ErrorReporting {
         drop(reporter);
 
         self.diagnostics.extend(diagnostics.into_iter().map(|diagnostic| {
-            let file_id = match self.file_ids.entry(diagnostic.path.canonicalize().expect("Failed to canonicalize diagnostic path")) {
-                Entry::Occupied(entry) => *entry.get(),
-                Entry::Vacant(entry) => {
-                    let id: FileId = self.files.len() as u32;
-                    self.files.push((std::fs::read_to_string(entry.key().as_path()).expect("Failed to read source file for error reporting"),
-                        Rc::clone(&diagnostic.path)));
-                    entry.insert(id);
-                    id
-                },
-            };
-
-            let context = DiagnosticContext::new(file_id, diagnostic.span, &marker);
+            let context = DiagnosticContext::new(diagnostic.file_id, diagnostic.span, &marker);
 
             let name: &'static str = diagnostic.message.name();
             let severity = diagnostic.message.severity();
@@ -172,7 +171,7 @@ impl ErrorReporting {
             let primary_note = diagnostic.message.primary_note(&context);
             let additional_notes = diagnostic.message.additional_notes(&context);
 
-            DiagnosticData::new(file_id, diagnostic.span, stage, name, severity, message,
+            DiagnosticData::new(diagnostic.file_id, diagnostic.span, stage, name, severity, message,
                 primary_annotation, additional_annotations, primary_note, additional_notes, diagnostic.suppressed_messages.len() as u32)
         }));
     }
@@ -186,7 +185,8 @@ impl ErrorReporting {
         let mut files: SimpleFiles<_, &str> = SimpleFiles::new();
 
         for (source, path) in self.files.iter() {
-            files.add(path.to_string_lossy(), source);
+            files.add(path.strip_prefix(&self.working_dir).map(|path| path.to_string_lossy())
+                .unwrap_or_else(|_| path.to_string_lossy()), source);
         }
 
         let mut stream = termcolor::BufferedStandardStream::stderr(termcolor::ColorChoice::Auto);
@@ -233,17 +233,17 @@ pub struct ErrorReporter<D, M> {
     stage: CompileStage,
     pub custom_data: D,
     diagnostics: Vec<SubmittedDiagnosticData<M>>,
-    current_file: Rc<PathBuf>,
+    current_file_id: FileId,
     panic_mode: bool,
 }
 
 impl<D, M> ErrorReporter<D, M> {
-    fn new(stage: CompileStage, file: Rc<PathBuf>, marker: D) -> Self {
+    fn new(stage: CompileStage, file_id: FileId, marker: D) -> Self {
         ErrorReporter {
             stage,
             custom_data: marker,
             diagnostics: Vec::new(),
-            current_file: file,
+            current_file_id: file_id,
             panic_mode: false,
         }
     }
@@ -259,9 +259,9 @@ impl<D, M> ErrorReporter<D, M> {
     pub fn report(&mut self, span: Span, message: M, panic: bool) { // panic is unrelated to a Rust "panic!"
         if self.panic_mode {
             self.diagnostics.last_mut().expect("Error reporter is in panic mode, but there are no errors")
-                .suppressed_messages.push(SubmittedDiagnosticData::new(Rc::clone(&self.current_file), span, message));
+                .suppressed_messages.push(SubmittedDiagnosticData::new(self.current_file_id, span, message));
         } else {
-            self.diagnostics.push(SubmittedDiagnosticData::new(Rc::clone(&self.current_file), span, message));
+            self.diagnostics.push(SubmittedDiagnosticData::new(self.current_file_id, span, message));
 
             if panic {
                 self.panic_mode = true;
@@ -269,8 +269,8 @@ impl<D, M> ErrorReporter<D, M> {
         }
     }
 
-    pub fn set_current_file(&mut self, file: Rc<PathBuf>) {
-        self.current_file = file;
+    pub fn set_current_file_id(&mut self, file_id: FileId) {
+        self.current_file_id = file_id;
     }
 
     pub fn panic_mode(&self) -> bool {

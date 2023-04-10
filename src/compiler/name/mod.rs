@@ -205,6 +205,7 @@ impl Default for NameResolution {
 pub struct SimpleModuleDecl {
     pub name: PositionedName,
     pub declarations: HashMap<String, SimpleDecl>,
+    pub unnamed_templates: Vec<SimpleUnnamedTemplateDecl>,
 }
 
 #[derive(Debug)]
@@ -219,6 +220,22 @@ pub struct SimpleClassDecl {
 pub struct SimpleTypeAliasDecl {
     pub name: PositionedName,
     pub type_id: TypeId,
+}
+
+#[derive(Debug)]
+pub enum SimpleUnnamedTemplateData {
+    Conversion {
+        // TODO
+    },
+    Optimize {
+        // TODO
+    },
+}
+
+#[derive(Debug)]
+pub struct SimpleUnnamedTemplateDecl {
+    pub name_span: Span, // span of what would be the name for normal templates
+    pub data: SimpleUnnamedTemplateData,
 }
 
 #[derive(Debug)]
