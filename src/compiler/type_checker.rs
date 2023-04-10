@@ -16,6 +16,7 @@ pub enum TypeError<'source> {
     TypeAlreadyDeclared(&'source str, Option<Span>),
     DeclAlreadyDeclared(&'source str, Option<Span>),
     TypeNotFound(String),
+    ConversionParameterCount(usize),
 }
 
 impl<'source> Diagnostic<MessageMarker> for TypeError<'source> {
@@ -24,6 +25,7 @@ impl<'source> Diagnostic<MessageMarker> for TypeError<'source> {
             Self::TypeAlreadyDeclared(_, _) => "type/already_declared_type",
             Self::DeclAlreadyDeclared(_, _) => "type/already_declared_decl",
             Self::TypeNotFound(_) => "type/not_found",
+            Self::ConversionParameterCount(_) => "type/conversion_parameter_count",
         }
     }
 
@@ -39,23 +41,29 @@ impl<'source> Diagnostic<MessageMarker> for TypeError<'source> {
             Self::TypeAlreadyDeclared(name, _) => format!("Type `{}` was already declared", name),
             Self::DeclAlreadyDeclared(name, _) => format!("`{}` was already declared", name),
             Self::TypeNotFound(name) => format!("Type `{}` not found", name),
+            Self::ConversionParameterCount(count) => if *count == 0 {
+                String::from("Conversion template requires exactly one parameter")
+            } else {
+                format!("Conversion template has more than one parameter: {}", count)
+            },
         }
     }
 
     fn primary_annotation(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Option<String> {
         match self {
-            TypeError::TypeAlreadyDeclared(name, _) => Some(format!("`{}` declared again here", name)),
-            TypeError::DeclAlreadyDeclared(name, _) => Some(format!("`{}` declared again here", name)),
-            TypeError::TypeNotFound(name) => Some(format!("`{}` referenced here", name)),
+            Self::TypeAlreadyDeclared(name, _) => Some(format!("`{}` declared again here", name)),
+            Self::DeclAlreadyDeclared(name, _) => Some(format!("`{}` declared again here", name)),
+            Self::TypeNotFound(name) => Some(format!("`{}` referenced here", name)),
+            Self::ConversionParameterCount(count) => Some(format!("{} parameters declared here", count)),
         }
     }
 
     fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(Span, Option<String>)> {
         match self {
-            TypeError::TypeAlreadyDeclared(_, span) => if let Some(&span) = span.as_ref() {
+            Self::TypeAlreadyDeclared(_, span) => if let Some(&span) = span.as_ref() {
                 vec![(span, Some(String::from("first declared here")))]
             } else { vec![] },
-            TypeError::DeclAlreadyDeclared(_, span) => if let Some(&span) = span.as_ref() {
+            Self::DeclAlreadyDeclared(_, span) => if let Some(&span) = span.as_ref() {
                 vec![(span, Some(String::from("first declared here")))]
             } else { vec![] },
             _ => Vec::new(),
@@ -281,7 +289,7 @@ impl<'source> TypeChecker {
 
                             path.pop();
                         },
-                        Decl::Template { kind, .. } => {
+                        Decl::Template { kind, parameters, return_type, parameter_span, .. } => {
                             match kind {
                                 TemplateKind::Template { name } => {
                                     path.push(name.source());
@@ -301,12 +309,18 @@ impl<'source> TypeChecker {
                                     path.pop();
                                 },
                                 TemplateKind::Conversion { span } => {
-                                    if let Some(top_module) = decl_stack.last_mut() {
-                                        top_module.unnamed_templates.push(SimpleUnnamedTemplateDecl {
-                                            name_span: *span,
-                                            data: SimpleUnnamedTemplateData::Conversion {
-                                            },
-                                        });
+                                    if parameters.len() != 1 {
+                                        self.error(*parameter_span, TypeError::ConversionParameterCount(parameters.len()), reporter);
+                                    } else {
+                                        let from = &parameters[0];
+
+                                        if let Some(top_module) = decl_stack.last_mut() {
+                                            top_module.unnamed_templates.push(SimpleUnnamedTemplateDecl {
+                                                name_span: *span,
+                                                data: SimpleUnnamedTemplateData::Conversion {
+                                                },
+                                            });
+                                        }
                                     }
                                 },
                                 TemplateKind::Optimize { on } => {
