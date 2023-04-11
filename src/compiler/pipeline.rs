@@ -1,8 +1,11 @@
 use std::path::PathBuf;
 use std::rc::Rc;
+use crate::compiler::ast::forward::ForwardDeclStorage;
 use crate::compiler::ast::simple::Decl;
 use crate::compiler::error::{CompileStage, ErrorReporting, FileId};
+use crate::compiler::forward_declare::ForwardDeclarer;
 use crate::compiler::lexer::Lexer;
+use crate::compiler::name::TypeStorage;
 use crate::compiler::parser::Parser;
 use crate::compiler::type_checker::TypeChecker;
 use crate::Config;
@@ -61,11 +64,37 @@ pub struct ParsedState<'source> {
 }
 
 impl<'source> ParsedState<'source> {
+    pub fn forward_declare(self, reporting: &mut ErrorReporting) -> ForwardDeclaredState<'source> {
+        let mut reporter = reporting.create_for_stage(CompileStage::ForwardDeclarer,  self.file_id, ());
+
+        let forward_declarer = ForwardDeclarer::new(Rc::clone(&self.config),
+            Rc::clone(&self.input), self.file_id);
+        let result = forward_declarer.forward_declare(self.declarations, &mut reporter);
+
+        reporting.submit(reporter);
+
+        ForwardDeclaredState {
+            config: self.config, input: self.input, file_id: self.file_id,
+            declarations: result.declarations,
+            type_storage: result.types,
+            forward_declaration_storage: result.storage,
+        }
+    }
+}
+
+pub struct ForwardDeclaredState<'source> {
+    pub config: Rc<Config>, input: Rc<PathBuf>, file_id: FileId,
+    pub declarations: Vec<Decl<'source>>,
+    pub type_storage: TypeStorage,
+    pub forward_declaration_storage: ForwardDeclStorage,
+}
+
+impl<'source> ForwardDeclaredState<'source> {
     pub fn check_types(self, reporting: &mut ErrorReporting) -> TypeCheckedState {
         let mut reporter = reporting.create_for_stage(CompileStage::TypeChecker,  self.file_id, ());
 
         let mut type_checker = TypeChecker::new(Rc::clone(&self.config),
-            Rc::clone(&self.input), self.file_id);
+            Rc::clone(&self.input), self.file_id, self.type_storage);
         type_checker.check_types(self.declarations, &mut reporter);
 
         reporting.submit(reporter);

@@ -13,6 +13,7 @@ use crate::Config;
 pub enum CompileStage {
     Lexer,
     Parser,
+    ForwardDeclarer,
     TypeChecker,
 }
 

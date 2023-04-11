@@ -166,24 +166,14 @@ impl Default for SimpleDeclStorage {
 
 #[derive(Debug)]
 pub struct NameResolution {
-    types: TypeStorage,
     decls: SimpleDeclStorage,
 }
 
 impl NameResolution {
     pub fn new() -> Self {
         NameResolution {
-            types: TypeStorage::new(),
             decls: SimpleDeclStorage::new(),
         }
-    }
-
-    pub fn get_simple_types(&self) -> &TypeStorage {
-        &self.types
-    }
-
-    pub fn get_simple_types_mut(&mut self) -> &mut TypeStorage {
-        &mut self.types
     }
 
     pub fn get_simple_decls(&self) -> &SimpleDeclStorage {

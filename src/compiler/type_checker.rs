@@ -6,7 +6,7 @@ use crate::compiler::ast::simple::{Decl, TemplateKind};
 use crate::compiler::ast::typed::TypedDecl;
 use crate::compiler::error::{Diagnostic, DiagnosticContext, ErrorReporter, FileId, NoteKind, Severity};
 use crate::compiler::error::span::Span;
-use crate::compiler::name::{NameResolution, PositionedName, SimpleClassDecl, SimpleDecl, SimpleModuleDecl, SimpleTypeAliasDecl, SimpleTypeInfo, SimpleUnnamedTemplateData, SimpleUnnamedTemplateDecl};
+use crate::compiler::name::{NameResolution, PositionedName, SimpleClassDecl, SimpleDecl, SimpleModuleDecl, SimpleTypeAliasDecl, SimpleUnnamedTemplateData, SimpleUnnamedTemplateDecl, TypeStorage};
 use crate::Config;
 
 pub type MessageMarker = ();
@@ -85,19 +85,19 @@ pub struct TypeChecker {
     _config: Rc<Config>,
     path: Rc<PathBuf>, file_id: FileId,
 
+    types: TypeStorage,
     names: NameResolution,
 }
 
 impl<'source> TypeChecker {
-    pub fn new(config: Rc<Config>, path: Rc<PathBuf>, file_id: FileId) -> Self {
+    pub fn new(config: Rc<Config>, path: Rc<PathBuf>, file_id: FileId, type_storage: TypeStorage) -> Self {
         TypeChecker {
             _config: config, path, file_id,
-            names: NameResolution::new(),
+            types: type_storage, names: NameResolution::new(),
         }
     }
 
     pub fn check_types(&mut self, declarations: Vec<Decl<'source>>, reporter: &mut TypeErrorReporter<'source>) -> Vec<TypedDecl<'source>> {
-        self.declare_types(&declarations, reporter);
         self.declare_declarations(&declarations, reporter);
 
         eprintln!("[debug] Name resolution state:\n{:#?}", &self.names);
@@ -109,75 +109,6 @@ impl<'source> TypeChecker {
         }
 
         typed_declarations
-    }
-
-    fn declare_types(&mut self, decls: &[Decl<'source>], reporter: &mut TypeErrorReporter<'source>) {
-        enum ProcessVariant<'decl, 'source> {
-            Decl(&'decl Decl<'source>),
-            ModuleStart(&'source str),
-            ModuleEnd,
-        }
-
-        let mut to_process = decls.iter().map(ProcessVariant::Decl).collect::<VecDeque<_>>();
-        let mut path = PathBuf::new();
-
-        while let Some(variant) = to_process.pop_front() {
-            match variant {
-                ProcessVariant::Decl(decl) => {
-                    match decl {
-                        Decl::Module { name, declarations } => {
-                            to_process.push_back(ProcessVariant::ModuleStart(name.source()));
-                            to_process.extend(declarations.iter().map(ProcessVariant::Decl));
-                            to_process.push_back(ProcessVariant::ModuleEnd);
-                        },
-                        Decl::Interface { name, .. } => {
-                            path.push(name.source());
-
-                            if let Some(previous_id) = self.names.get_simple_types().get_type_id_by_path(&path) {
-                                let previous_span = self.names.get_simple_types().get_span(previous_id);
-                                self.error(name.span(), TypeError::TypeAlreadyDeclared(name.source(), previous_span.map(|(span, _)| span)), reporter);
-                            } else {
-                                self.names.get_simple_types_mut().insert(path.clone(), name.span(), self.file_id, SimpleTypeInfo::Class { interface: true, });
-                            }
-
-                            path.pop();
-                        },
-                        Decl::Class { name, .. } => {
-                            path.push(name.source());
-
-                            if let Some(previous_id) = self.names.get_simple_types().get_type_id_by_path(&path) {
-                                let previous_span = self.names.get_simple_types().get_span(previous_id);
-                                self.error(name.span(), TypeError::TypeAlreadyDeclared(name.source(), previous_span.map(|(span, _)| span)), reporter);
-                            } else {
-                                self.names.get_simple_types_mut().insert(path.clone(), name.span(), self.file_id, SimpleTypeInfo::Class { interface: false, });
-                            }
-
-                            path.pop();
-                        },
-                        Decl::TypeAlias { name, .. } => {
-                            path.push(name.source());
-
-                            if let Some(previous_id) = self.names.get_simple_types().get_type_id_by_path(&path) {
-                                let previous_span = self.names.get_simple_types().get_span(previous_id);
-                                self.error(name.span(), TypeError::TypeAlreadyDeclared(name.source(), previous_span.map(|(span, _)| span)), reporter);
-                            } else {
-                                self.names.get_simple_types_mut().insert(path.clone(), name.span(), self.file_id, SimpleTypeInfo::TypeAlias);
-                            }
-
-                            path.pop();
-                        },
-                        // The remaining declarations don't create new types
-                        _ => {},
-                    }
-                },
-                ProcessVariant::ModuleStart(name) => {
-                    path.push(name);
-                },
-                ProcessVariant::ModuleEnd => {
-                    path.pop();
-                },
-            };
-        }
     }
 
     fn declare_declarations(&mut self, decls: &[Decl<'source>], reporter: &mut TypeErrorReporter<'source>) {
@@ -214,7 +145,7 @@ impl<'source> TypeChecker {
                                     },
                                     Entry::Vacant(entry) => {
                                         let parameters = parameters.iter().map(|part| {
-                                            let type_id = match self.names.get_simple_types_mut().get_type_id_by_type_part(path.parent().expect("Path does not have a parent despite previous push"), &part.parameter_type) {
+                                            let type_id = match self.types.get_type_id_by_type_part(path.parent().expect("Path does not have a parent despite previous push"), &part.parameter_type) {
                                                 None => {
                                                     self.error(part.parameter_type.span(), TypeError::TypeNotFound(format!("{:?}", &part.parameter_type)), reporter);
                                                     0
@@ -227,7 +158,7 @@ impl<'source> TypeChecker {
 
                                         entry.insert(SimpleDecl::Class(SimpleClassDecl {
                                             name: PositionedName::new(name.source().to_owned(), self.file_id, name.span()),
-                                            type_id: self.names.get_simple_types().get_type_id_by_path(&path).expect("Bug in compiler: Type for declaration does not exist"),
+                                            type_id: self.types.get_type_id_by_path(&path).expect("Bug in compiler: Type for declaration does not exist"),
                                             interface: true,
                                             parameters,
                                         }));
@@ -247,7 +178,7 @@ impl<'source> TypeChecker {
                                     },
                                     Entry::Vacant(entry) => {
                                         let parameters = parameters.iter().map(|part| {
-                                            let type_id = match self.names.get_simple_types_mut().get_type_id_by_type_part(path.parent().expect("Path does not have a parent despite previous push"), &part.parameter_type) {
+                                            let type_id = match self.types.get_type_id_by_type_part(path.parent().expect("Path does not have a parent despite previous push"), &part.parameter_type) {
                                                 None => {
                                                     self.error(part.parameter_type.span(), TypeError::TypeNotFound(format!("{:?}", &part.parameter_type)), reporter);
                                                     0
@@ -260,7 +191,7 @@ impl<'source> TypeChecker {
 
                                         entry.insert(SimpleDecl::Class(SimpleClassDecl {
                                             name: PositionedName::new(name.source().to_owned(), self.file_id, name.span()),
-                                            type_id: self.names.get_simple_types().get_type_id_by_path(&path).expect("Bug in compiler: Type for declaration does not exist"),
+                                            type_id: self.types.get_type_id_by_path(&path).expect("Bug in compiler: Type for declaration does not exist"),
                                             interface: false,
                                             parameters,
                                         }));
@@ -281,7 +212,7 @@ impl<'source> TypeChecker {
                                     Entry::Vacant(entry) => {
                                         entry.insert(SimpleDecl::TypeAlias(SimpleTypeAliasDecl {
                                             name: PositionedName::new(name.source().to_owned(), self.file_id, name.span()),
-                                            type_id: self.names.get_simple_types().get_type_id_by_path(&path).expect("Bug in compiler: Type for declaration does not exist"),
+                                            type_id: self.types.get_type_id_by_path(&path).expect("Bug in compiler: Type for declaration does not exist"),
                                         }));
                                     },
                                 };

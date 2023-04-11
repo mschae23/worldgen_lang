@@ -1,8 +1,11 @@
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
+use crate::compiler::ast::forward::{ForwardDeclareResult, ForwardDeclStorage};
 use crate::compiler::ast::simple::Decl;
 use crate::compiler::error::{Diagnostic, DiagnosticContext, ErrorReporter, FileId, NoteKind, Severity};
 use crate::compiler::error::span::Span;
+use crate::compiler::name::{SimpleTypeInfo, TypeStorage};
 use crate::Config;
 
 pub type MessageMarker = ();
@@ -89,8 +92,83 @@ impl<'source> ForwardDeclarer {
         }
     }
 
-    pub fn forward_declare(&mut self, _declarations: Vec<Decl<'source>>, _reporter: &mut DeclErrorReporter<'source>) /* -> ForwardDeclarationResult */ {
-        // TODO
+    pub fn forward_declare(self, declarations: Vec<Decl<'source>>, reporter: &mut DeclErrorReporter<'source>) -> ForwardDeclareResult<'source> {
+        let types = self.declare_types(&declarations, reporter);
+
+        let storage = ForwardDeclStorage::new();
+        ForwardDeclareResult::new(types, storage, declarations)
+    }
+
+    fn declare_types(&self, decls: &[Decl<'source>], reporter: &mut DeclErrorReporter<'source>) -> TypeStorage {
+        enum ProcessVariant<'decl, 'source> {
+            Decl(&'decl Decl<'source>),
+            ModuleStart(&'source str),
+            ModuleEnd,
+        }
+
+        let mut storage = TypeStorage::new();
+        let mut to_process = decls.iter().map(ProcessVariant::Decl).collect::<VecDeque<_>>();
+        let mut path = PathBuf::new();
+
+        while let Some(variant) = to_process.pop_front() {
+            match variant {
+                ProcessVariant::Decl(decl) => {
+                    match decl {
+                        Decl::Module { name, declarations } => {
+                            to_process.push_back(ProcessVariant::ModuleStart(name.source()));
+                            to_process.extend(declarations.iter().map(ProcessVariant::Decl));
+                            to_process.push_back(ProcessVariant::ModuleEnd);
+                        },
+                        Decl::Interface { name, .. } => {
+                            path.push(name.source());
+
+                            if let Some(previous_id) = storage.get_type_id_by_path(&path) {
+                                let previous_span = storage.get_span(previous_id);
+                                self.error(name.span(), DeclError::TypeAlreadyDeclared(name.source(), previous_span.map(|(span, _)| span)), reporter);
+                            } else {
+                                storage.insert(path.clone(), name.span(), self.file_id, SimpleTypeInfo::Class { interface: true, });
+                            }
+
+                            path.pop();
+                        },
+                        Decl::Class { name, .. } => {
+                            path.push(name.source());
+
+                            if let Some(previous_id) = storage.get_type_id_by_path(&path) {
+                                let previous_span = storage.get_span(previous_id);
+                                self.error(name.span(), DeclError::TypeAlreadyDeclared(name.source(), previous_span.map(|(span, _)| span)), reporter);
+                            } else {
+                                storage.insert(path.clone(), name.span(), self.file_id, SimpleTypeInfo::Class { interface: false, });
+                            }
+
+                            path.pop();
+                        },
+                        Decl::TypeAlias { name, .. } => {
+                            path.push(name.source());
+
+                            if let Some(previous_id) = storage.get_type_id_by_path(&path) {
+                                let previous_span = storage.get_span(previous_id);
+                                self.error(name.span(), DeclError::TypeAlreadyDeclared(name.source(), previous_span.map(|(span, _)| span)), reporter);
+                            } else {
+                                storage.insert(path.clone(), name.span(), self.file_id, SimpleTypeInfo::TypeAlias);
+                            }
+
+                            path.pop();
+                        },
+                        // The remaining declarations don't create new types
+                        _ => {},
+                    }
+                },
+                ProcessVariant::ModuleStart(name) => {
+                    path.push(name);
+                },
+                ProcessVariant::ModuleEnd => {
+                    path.pop();
+                },
+            };
+        };
+
+        storage
     }
 
     fn error(&self, span: Span, message: DeclError<'source>, reporter: &mut DeclErrorReporter<'source>) {

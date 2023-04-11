@@ -35,9 +35,11 @@ pub fn run() -> Result<(), std::io::Error> {
     let input = Rc::new(config.input.clone());
     let source = std::fs::read_to_string(input.as_path())?;
     let _pipeline = CompileState::new(Rc::clone(&config), &source,
-        Rc::clone(&input), reporting.get_file_id(Rc::clone(&input), std::fs::read_to_string(&*input)?)?)
+        Rc::clone(&input),
+        reporting.get_file_id(Rc::clone(&input), std::fs::read_to_string(&*input)?)?)
         .tokenize()
         .parse(&mut reporting)
+        .forward_declare(&mut reporting)
         .check_types(&mut reporting);
 
     // compile
