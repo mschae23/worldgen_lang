@@ -1,5 +1,8 @@
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use non_empty_vec::ne_vec;
 use crate::compiler::ast::simple::{PrimitiveTypeKind, TypePart, TypeReferencePart};
 use crate::compiler::error::FileId;
 use crate::compiler::error::span::Span;
@@ -47,7 +50,7 @@ pub const PRIMITIVE_TYPE_COUNT: usize = 8;
 #[derive(Debug)]
 pub struct TypeStorage {
     types: Vec<SimpleTypeInfo>,
-    type_id_lookup: HashMap<PathBuf, TypeId>, // TODO Stop using Path for this
+    top_level_module: TypeModule,
     type_path_lookup: Vec<Option<PathBuf>>,
     type_span_lookup: Vec<Option<(Span, FileId)>>,
 }
@@ -65,7 +68,7 @@ impl TypeStorage {
                 SimpleTypeInfo::Primitive { kind: PrimitiveTypeKind::Type },
                 SimpleTypeInfo::Error,
             ],
-            type_id_lookup: HashMap::new(),
+            top_level_module: TypeModule::new(),
             type_path_lookup: Vec::new(),
             type_span_lookup: Vec::new(),
         }
@@ -83,17 +86,21 @@ impl TypeStorage {
         }
     }
 
-    pub fn get_type_id_by_path<P: AsRef<Path>>(&self, path: P) -> Option<TypeId> {
-        fn _get_by_path_impl(this: &TypeStorage, path: &Path) -> Option<TypeId> {
-            this.type_id_lookup.get(path).copied()
+    pub fn get_type_id_by_path(&self, path: &[&str]) -> Option<TypeId> {
+        assert!(path.len() >= 1, "Cannot get type ID for empty path");
+
+        let mut module = &self.top_level_module;
+
+        for &component in path.iter().take(path.len().saturating_sub(1)) {
+            module = module.sub_modules.get(component)?;
         }
 
-        _get_by_path_impl(self, path.as_ref())
+        module.types.get(path.last().copied().expect("Empty path despite previous check")).copied()
     }
 
-    pub fn get_type_id_by_type_part(&mut self, prefix: &[&str], part: &TypePart) -> Option<TypeId> {
+    pub fn get_type_id_by_type_part<'source>(&mut self, prefix: &[&str], part: &TypePart<'source>, file_id: FileId) -> Result<TypeId, (&'source str, Span)> {
         match part {
-            TypePart::Primitive(kind, _) => Some(match kind {
+            TypePart::Primitive(kind, _) => Ok(match kind {
                 PrimitiveTypeKind::Int => INT_TYPE_ID,
                 PrimitiveTypeKind::Float => FLOAT_TYPE_ID,
                 PrimitiveTypeKind::Boolean => BOOLEAN_TYPE_ID,
@@ -103,35 +110,58 @@ impl TypeStorage {
                 PrimitiveTypeKind::Type => TYPE_TYPE_ID,
             }),
             TypePart::Name(name) => self.get_type_id_by_type_reference_part(prefix, name),
-            TypePart::Template { .. } => {
+            TypePart::Template { args_span, return_type, .. } => {
                 let id = self.types.len();
                 self.types.push(SimpleTypeInfo::Template);
                 self.type_path_lookup.push(None);
-                self.type_span_lookup.push(None);
-                Some(id)
+                self.type_span_lookup.push(Some((args_span.mix(return_type.span()), file_id)));
+                Ok(id)
             },
         }
     }
 
-    pub fn get_type_id_by_type_reference_part<'source>(&self, prefix: &[&'source str], part: &TypeReferencePart) -> Result<TypeId, (&'source str, Span)> {
-        let to_search = part.0.first();
+    pub fn get_type_id_by_type_reference_part<'source>(&self, prefix: &[&str], part: &TypeReferencePart<'source>) -> Result<TypeId, (&'source str, Span)> {
+        let mut module_stack = ne_vec![&self.top_level_module];
 
-        let mut path = prefix.iter().collect::<PathBuf>();
-        path.push(to_search.source());
-        let mut first_module = None;
-
-        for i in prefix.len().saturating_sub(1) ..= 0 {
-            if let Some(id) = self.get_type_id_by_path(&path) {
-                first_module = Some(id);
+        for &component in prefix.iter() {
+            if let Some(sub_module) = module_stack.last().sub_modules.get(component) {
+                module_stack.push(sub_module);
             } else {
-                // PathBuf doesn't seem to have a remove(index) method
-                path.pop();
-                path.pop();
-                path.push(to_search.source());
+                // There is the possibility that no types have been defined in the current module,
+                // but in outer ones. Just go as far as possible, and search there.
+                break;
             }
         }
 
-        Err((to_search.source(), to_search.span()))
+        'outer:
+        for module in module_stack.iter().copied().rev() {
+            let mut current = module;
+
+            for (i, component) in part.0.iter().take(<NonZeroUsize as Into<usize>>::into(part.0.len()).saturating_sub(1)).enumerate() {
+                if let Some(sub_module) = current.sub_modules.get(component.source()) {
+                    current = sub_module;
+                } else if i == 0 {
+                    // If this is the first component that is not found in this module, keep
+                    // searching in the parent module.
+                    continue 'outer;
+                } else {
+                    return Err((component.source(), component.span()));
+                }
+            }
+
+            if let Some(&id) = current.types.get(part.0.last().source()) {
+                return Ok(id);
+            } else if <NonZeroUsize as Into<usize>>::into(part.0.len()) == 1 {
+                // If the part has only this component, it will be the first one,
+                // so just continue searching.
+                continue 'outer;
+            } else {
+                return Err((part.0.last().source(), part.0.last().span()));
+            }
+        }
+
+        let first = part.0.first();
+        Err((first.source(), first.span()))
     }
 
     pub fn get_span(&self, type_id: TypeId) -> Option<(Span, FileId)> {
@@ -142,20 +172,52 @@ impl TypeStorage {
         }
     }
 
-    pub fn insert(&mut self, path: PathBuf, span: Span, file_id: FileId, type_info: SimpleTypeInfo) -> TypeId {
-        let id = self.types.len();
+    pub fn insert(&mut self, path: &[&str], span: Span, file_id: FileId, type_info: SimpleTypeInfo) -> Result<TypeId, TypeId> {
+        assert!(path.len() >= 1, "Cannot insert a type with an empty path");
+
+        let id: TypeId = self.types.len();
+
+        let mut module = &mut self.top_level_module;
+
+        for &component in path.iter().take(path.len().saturating_sub(1)) {
+            module = module.sub_modules.entry(component.to_owned()).or_default();
+        }
+
+        match module.types.entry(path.last().copied().expect("Empty path despite previous check").to_owned()) {
+            Entry::Occupied(entry) => return Err(*entry.get()),
+            Entry::Vacant(entry) => entry.insert(id),
+        };
 
         self.types.push(type_info);
-        // TODO Is this clone okay? Maybe use Rc?
-        self.type_id_lookup.insert(path.clone(), id);
-        self.type_path_lookup.push(Some(path));
+        self.type_path_lookup.push(Some(path.iter().collect()));
         self.type_span_lookup.push(Some((span, file_id)));
 
-        id
+        Ok(id)
     }
 }
 
 impl Default for TypeStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug)]
+struct TypeModule {
+    pub sub_modules: HashMap<String, TypeModule>,
+    pub types: HashMap<String, TypeId>,
+}
+
+impl TypeModule {
+    pub fn new() -> Self {
+        TypeModule {
+            sub_modules: HashMap::new(),
+            types: HashMap::new(),
+        }
+    }
+}
+
+impl Default for TypeModule {
     fn default() -> Self {
         Self::new()
     }

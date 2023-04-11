@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt::{Debug, Display, Formatter};
 use non_empty_vec::NonEmpty;
 use crate::compiler::error::span::Span;
@@ -100,6 +101,24 @@ pub enum TemplateKind<'source> {
     Optimize {
         on: TypePart<'source>,
     },
+}
+
+impl<'source> TemplateKind<'source> {
+    pub fn span(&self) -> Span {
+        match self {
+            TemplateKind::Template { name } => name.span(),
+            TemplateKind::Conversion { span } => *span,
+            TemplateKind::Optimize { on } => on.span(),
+        }
+    }
+
+    pub fn name_for_error(&self) -> Cow<'source, str> {
+        match self {
+            TemplateKind::Template { name } => Cow::Owned(format!("`{}`", name.source())),
+            TemplateKind::Conversion { .. } => Cow::Borrowed("type conversion template"),
+            TemplateKind::Optimize { .. } => Cow::Borrowed("optimization template"),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

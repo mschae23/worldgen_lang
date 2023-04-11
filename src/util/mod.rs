@@ -2,8 +2,8 @@
 #[cfg(debug_assertions)]
 macro_rules! println_debug {
     ($($x:tt)*) => {{
-        print!("[debug] ");
-        println!($($x)*);
+        eprint!("[debug] ");
+        eprintln!($($x)*);
     }}
 }
 

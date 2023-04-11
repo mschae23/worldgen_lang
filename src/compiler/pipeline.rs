@@ -94,19 +94,19 @@ impl<'source> ForwardDeclaredState<'source> {
         let mut reporter = reporting.create_for_stage(CompileStage::TypeChecker,  self.file_id, ());
 
         let mut type_checker = TypeChecker::new(Rc::clone(&self.config),
-            Rc::clone(&self.input), self.file_id, self.type_storage);
+            Rc::clone(&self.input), self.file_id, self.type_storage, self.forward_declaration_storage);
         type_checker.check_types(self.declarations, &mut reporter);
 
         reporting.submit(reporter);
 
         TypeCheckedState {
-            config: self.config, input: self.input, file_id: self.file_id,
+            config: self.config, _input: self.input, _file_id: self.file_id,
         }
     }
 }
 
 pub struct TypeCheckedState {
-    pub config: Rc<Config>, input: Rc<PathBuf>, file_id: FileId,
+    pub config: Rc<Config>, _input: Rc<PathBuf>, _file_id: FileId,
     // TODO Result from type checker
 }
 

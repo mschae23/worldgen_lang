@@ -92,17 +92,17 @@ impl Diagnostic<MessageMarker> for ParserError {
 
     fn message(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> String {
         match self {
-            Self::ExpectedDeclarationEnd => String::from("Expected `;` after declaration"),
-            Self::ExpectedAfter(a, b, _) => format!("Expected {} after {}", a, b),
-            Self::ExpectedBefore(a, b, _) => format!("Expected {} before {}", a, b),
-            Self::Expected(a) => format!("Expected {}", a),
-            Self::ParameterCount(expected, got, _) => format!("Expected {} {}, found {}", *expected,
+            Self::ExpectedDeclarationEnd => String::from("expected `;` after declaration"),
+            Self::ExpectedAfter(a, b, _) => format!("expected {} after {}", a, b),
+            Self::ExpectedBefore(a, b, _) => format!("expected {} before {}", a, b),
+            Self::Expected(a) => format!("expected {}", a),
+            Self::ParameterCount(expected, got, _) => format!("expected {} {}, found {}", *expected,
                 if *expected == 1 { "parameter" } else { "parameters" }, *got),
-            Self::TooManyArguments(actual) => format!("More than 255 arguments to a template call are not supported (found {})", *actual),
-            Self::FailedParseLiteral(kind) => format!("Failed to parse {} literal", kind),
-            Self::ExpectedDeclaration => String::from("Expected declaration"),
-            Self::ExpectedExpression => String::from("Expected expression"),
-            Self::Unimplemented(msg) => format!("Not implemented yet: {}", msg),
+            Self::TooManyArguments(actual) => format!("more than 255 arguments to a template call are not supported (found {})", *actual),
+            Self::FailedParseLiteral(kind) => format!("failed to parse {} literal", kind),
+            Self::ExpectedDeclaration => String::from("expected declaration"),
+            Self::ExpectedExpression => String::from("expected expression"),
+            Self::Unimplemented(msg) => format!("not implemented yet: {}", msg),
         }
     }
 

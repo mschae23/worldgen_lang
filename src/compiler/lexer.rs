@@ -166,10 +166,10 @@ impl Diagnostic<MessageMarker> for LexerError {
 
     fn message(&self, _context: &DiagnosticContext<'_, ()>) -> String {
         match self {
-            Self::UnexpectedEof => String::from("Unexpected EOF"),
-            Self::UnexpectedCharacter(c) => format!("Unexpected character '{}'", c),
-            Self::ExpectedCharacter { expected, got } => format!("Expected character '{}', got '{}'", expected, got),
-            Self::UnterminatedString => String::from("Unterminated string"),
+            Self::UnexpectedEof => String::from("unexpected EOF"),
+            Self::UnexpectedCharacter(c) => format!("unexpected character '{}'", c),
+            Self::ExpectedCharacter { expected, got } => format!("expected character '{}', got '{}'", expected, got),
+            Self::UnterminatedString => String::from("unterminated string"),
             Self::OtherError(msg) => msg.clone(),
         }
     }
