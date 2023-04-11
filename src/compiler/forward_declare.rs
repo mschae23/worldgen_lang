@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::rc::Rc;
-use crate::compiler::ast::forward::{ForwardDeclareResult, ForwardDeclStorage};
+use crate::compiler::ast::forward::{ForwardClassDecl, ForwardDecl, ForwardDeclareResult, ForwardDeclStorage};
 use crate::compiler::ast::simple::Decl;
 use crate::compiler::error::{Diagnostic, DiagnosticContext, ErrorReporter, FileId, NoteKind, Severity};
 use crate::compiler::error::span::Span;
@@ -14,7 +14,7 @@ pub type MessageMarker = ();
 pub enum DeclError<'source> {
     TypeAlreadyDeclared(&'source str, Option<Span>),
     DeclAlreadyDeclared(&'source str, Option<Span>),
-    TypeNotFound(String),
+    UnresolvedType(String),
     ConversionParameterCount(usize),
 }
 
@@ -23,7 +23,7 @@ impl<'source> Diagnostic<MessageMarker> for DeclError<'source> {
         match self {
             Self::TypeAlreadyDeclared(_, _) => "decl/already_declared_type",
             Self::DeclAlreadyDeclared(_, _) => "decl/already_declared_decl",
-            Self::TypeNotFound(_) => "decl/type_not_found",
+            Self::UnresolvedType(_) => "decl/unresolved_type",
             Self::ConversionParameterCount(_) => "decl/conversion_parameter_count",
         }
     }
@@ -39,7 +39,7 @@ impl<'source> Diagnostic<MessageMarker> for DeclError<'source> {
         match self {
             Self::TypeAlreadyDeclared(name, _) => format!("Type `{}` was already declared", name),
             Self::DeclAlreadyDeclared(name, _) => format!("`{}` was already declared", name),
-            Self::TypeNotFound(name) => format!("Type `{}` not found", name),
+            Self::UnresolvedType(name) => format!("Unresolved type: `{}` not found", name),
             Self::ConversionParameterCount(count) => if *count == 0 {
                 String::from("Conversion template requires exactly one parameter")
             } else {
@@ -52,7 +52,7 @@ impl<'source> Diagnostic<MessageMarker> for DeclError<'source> {
         match self {
             Self::TypeAlreadyDeclared(name, _) => Some(format!("`{}` declared again here", name)),
             Self::DeclAlreadyDeclared(name, _) => Some(format!("`{}` declared again here", name)),
-            Self::TypeNotFound(name) => Some(format!("`{}` referenced here", name)),
+            Self::UnresolvedType(name) => Some(format!("`{}` referenced here", name)),
             Self::ConversionParameterCount(count) => Some(format!("{} parameters declared here", count)),
         }
     }
@@ -95,7 +95,9 @@ impl<'source> ForwardDeclarer {
     pub fn forward_declare(self, declarations: Vec<Decl<'source>>, reporter: &mut DeclErrorReporter<'source>) -> ForwardDeclareResult<'source> {
         let types = self.declare_types(&declarations, reporter);
 
-        let storage = ForwardDeclStorage::new();
+        let mut storage = ForwardDeclStorage::new();
+        self.declare_forward_decls(&mut storage, &types, &declarations, reporter);
+
         ForwardDeclareResult::new(types, storage, declarations)
     }
 
@@ -169,6 +171,59 @@ impl<'source> ForwardDeclarer {
         };
 
         storage
+    }
+
+    fn declare_forward_decls(&self, storage: &mut ForwardDeclStorage, types: &TypeStorage, decls: &[Decl<'source>], reporter: &mut DeclErrorReporter) {
+        enum ProcessVariant<'decl, 'source> {
+            Decl(&'decl Decl<'source>),
+            ModuleStart(&'source str),
+            ModuleEnd,
+        }
+
+        let mut to_process = decls.iter().map(ProcessVariant::Decl).collect::<VecDeque<_>>();
+        let mut path = Vec::new();
+
+        while let Some(variant) = to_process.pop_front() {
+            match variant {
+                ProcessVariant::Decl(decl) => match decl {
+                    Decl::Module { name, declarations, } => {
+                        to_process.push_back(ProcessVariant::ModuleStart(name.source()));
+                        to_process.extend(declarations.iter().map(ProcessVariant::Decl));
+                        to_process.push_back(ProcessVariant::ModuleEnd);
+                    },
+                    Decl::Interface { name, parameters, .. } => {
+                        path.push(name.source());
+
+                        let type_id = types.get_type_id_by_path(&path).expect("Internal compiler error: type for interface decl can't be found");
+
+                        let parameter_types = parameters.iter().map(|part| {
+                            let id = types.get_type_id_by_type_reference_part(&path, part);
+                        }).collect();
+
+                        storage.insert(&path, ForwardDecl::Class(ForwardClassDecl {
+                            type_id,
+                            name_span: name.span(),
+                            parameters: parameter_types,
+                        }));
+
+                        path.pop();
+                    },
+                    Decl::Class { .. } => {},
+                    Decl::TypeAlias { .. } => {},
+                    Decl::Template { .. } => {},
+                    Decl::Include { .. } => {},
+                    Decl::Import { .. } => {},
+                    Decl::Variable { .. } => {},
+                    Decl::Error => {},
+                },
+                ProcessVariant::ModuleStart(name) => {
+                    path.push(name);
+                },
+                ProcessVariant::ModuleEnd => {
+                    path.pop();
+                },
+            }
+        }
     }
 
     fn error(&self, span: Span, message: DeclError<'source>, reporter: &mut DeclErrorReporter<'source>) {

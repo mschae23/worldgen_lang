@@ -31,6 +31,7 @@ pub enum SimpleTypeInfo {
     },
     TypeAlias,
     Template,
+    Error,
 }
 
 pub const INT_TYPE_ID: TypeId = 0;
@@ -40,12 +41,13 @@ pub const STRING_TYPE_ID: TypeId = 3;
 pub const OBJECT_TYPE_ID: TypeId = 4;
 pub const ARRAY_TYPE_ID: TypeId = 5;
 pub const TYPE_TYPE_ID: TypeId = 6;
-pub const PRIMITIVE_TYPE_COUNT: usize = 7;
+pub const ERROR_TYPE_ID: TypeId = 7;
+pub const PRIMITIVE_TYPE_COUNT: usize = 8;
 
 #[derive(Debug)]
 pub struct TypeStorage {
     types: Vec<SimpleTypeInfo>,
-    type_id_lookup: HashMap<PathBuf, TypeId>,
+    type_id_lookup: HashMap<PathBuf, TypeId>, // TODO Stop using Path for this
     type_path_lookup: Vec<Option<PathBuf>>,
     type_span_lookup: Vec<Option<(Span, FileId)>>,
 }
@@ -61,6 +63,7 @@ impl TypeStorage {
                 SimpleTypeInfo::Primitive { kind: PrimitiveTypeKind::Object },
                 SimpleTypeInfo::Primitive { kind: PrimitiveTypeKind::Array },
                 SimpleTypeInfo::Primitive { kind: PrimitiveTypeKind::Type },
+                SimpleTypeInfo::Error,
             ],
             type_id_lookup: HashMap::new(),
             type_path_lookup: Vec::new(),
@@ -88,7 +91,7 @@ impl TypeStorage {
         _get_by_path_impl(self, path.as_ref())
     }
 
-    pub fn get_type_id_by_type_part(&mut self, prefix: &Path, part: &TypePart) -> Option<TypeId> {
+    pub fn get_type_id_by_type_part(&mut self, prefix: &[&str], part: &TypePart) -> Option<TypeId> {
         match part {
             TypePart::Primitive(kind, _) => Some(match kind {
                 PrimitiveTypeKind::Int => INT_TYPE_ID,
@@ -110,8 +113,25 @@ impl TypeStorage {
         }
     }
 
-    pub fn get_type_id_by_type_reference_part(&self, prefix: &Path, part: &TypeReferencePart) -> Option<TypeId> {
-        self.get_type_id_by_path([prefix, &part.0.iter().map(|token| token.source()).collect::<PathBuf>()].into_iter().collect::<PathBuf>())
+    pub fn get_type_id_by_type_reference_part<'source>(&self, prefix: &[&'source str], part: &TypeReferencePart) -> Result<TypeId, (&'source str, Span)> {
+        let to_search = part.0.first();
+
+        let mut path = prefix.iter().collect::<PathBuf>();
+        path.push(to_search.source());
+        let mut first_module = None;
+
+        for i in prefix.len().saturating_sub(1) ..= 0 {
+            if let Some(id) = self.get_type_id_by_path(&path) {
+                first_module = Some(id);
+            } else {
+                // PathBuf doesn't seem to have a remove(index) method
+                path.pop();
+                path.pop();
+                path.push(to_search.source());
+            }
+        }
+
+        Err((to_search.source(), to_search.span()))
     }
 
     pub fn get_span(&self, type_id: TypeId) -> Option<(Span, FileId)> {
