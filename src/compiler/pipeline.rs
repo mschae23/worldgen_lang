@@ -93,7 +93,7 @@ impl<'source> ForwardDeclaredState<'source> {
     pub fn check_types(self, reporting: &mut ErrorReporting) -> TypeCheckedState {
         let mut reporter = reporting.create_for_stage(CompileStage::TypeChecker,  self.file_id, ());
 
-        let mut type_checker = TypeChecker::new(Rc::clone(&self.config),
+        let type_checker = TypeChecker::new(Rc::clone(&self.config),
             Rc::clone(&self.input), self.file_id, self.type_storage, self.forward_declaration_storage);
         type_checker.check_types(self.declarations, &mut reporter);
 

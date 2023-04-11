@@ -187,7 +187,7 @@ impl<'source> ForwardDeclarer {
                         to_process.push(ProcessVariant::ModuleStart(name.source()));
                     },
                     Decl::Interface { name, parameters, .. } => {
-                        if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], false, |name2, decl2| !matches!(decl2, ForwardDecl::Template(_)) && name.source() == name2) {
+                        if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], |name2, decl2| !matches!(decl2, ForwardDecl::Template(_)) && name.source() == name2) {
                             let previous_span = storage.get_span_by_id(previous_id);
                             self.error(name.span(), DeclError::DeclAlreadyDeclared(format!("`{}`", name.source()), Some(previous_span)), reporter);
                         }
@@ -221,7 +221,7 @@ impl<'source> ForwardDeclarer {
                         path.pop();
                     },
                     Decl::Class { name, parameters, .. } => {
-                        if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], false, |name2, decl2| !matches!(decl2, ForwardDecl::Template(_)) && name.source() == name2) {
+                        if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], |name2, decl2| !matches!(decl2, ForwardDecl::Template(_)) && name.source() == name2) {
                             let previous_span = storage.get_span_by_id(previous_id);
                             self.error(name.span(), DeclError::DeclAlreadyDeclared(format!("`{}`", name.source()), Some(previous_span)), reporter);
                         }
@@ -255,7 +255,7 @@ impl<'source> ForwardDeclarer {
                         path.pop();
                     },
                     Decl::TypeAlias { name, to, .. } => {
-                        if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], false, |name2, decl2| !matches!(decl2, ForwardDecl::Template(_)) && name.source() == name2) {
+                        if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], |name2, decl2| !matches!(decl2, ForwardDecl::Template(_)) && name.source() == name2) {
                             let previous_span = storage.get_span_by_id(previous_id);
                             self.error(name.span(), DeclError::DeclAlreadyDeclared(format!("`{}`", name.source()), Some(previous_span)), reporter);
                         }
@@ -313,7 +313,7 @@ impl<'source> ForwardDeclarer {
                             _ => None,
                         };
 
-                        if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], false, |_, decl| match decl {
+                        if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], |_, decl| match decl {
                             ForwardDecl::Template(decl) => matches!(kind, TemplateKind::Template { .. })
                                 && decl.parameters == parameter_types && decl.return_type == return_type,
                             ForwardDecl::Conversion(decl) => matches!(kind, TemplateKind::Conversion { .. })
@@ -362,7 +362,7 @@ impl<'source> ForwardDeclarer {
                         }
                     },
                     Decl::Variable { kind, name, .. } => {
-                        if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], false, |name2, decl2| !matches!(decl2, ForwardDecl::Template(_)) && name.source() == name2) {
+                        if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], |name2, decl2| !matches!(decl2, ForwardDecl::Template(_)) && name.source() == name2) {
                             let previous_span = storage.get_span_by_id(previous_id);
                             self.error(name.span(), DeclError::DeclAlreadyDeclared(format!("`{}`", name.source()), Some(previous_span)), reporter);
                         }

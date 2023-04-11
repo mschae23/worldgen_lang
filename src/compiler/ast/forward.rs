@@ -86,16 +86,52 @@ impl ForwardDeclStorage {
         Err(name_debug_info)
     }
 
-    pub fn find_decl_id_for_duplicate<F: Fn(&str, &ForwardDecl) -> bool>(&self, prefix: &[&str], module_path: &[&str], recurse_to_parent: bool, predicate: F) -> Option<DeclId> {
+    pub fn find_decl_id_for_duplicate<F: Fn(&str, &ForwardDecl) -> bool>(&self, prefix: &[&str], module_path: &[&str], predicate: F) -> Option<DeclId> {
+        // Keep in sync with TypeStorage::get_type_id_by_type_reference_part
+        let mut module = &self.top_level_module;
+
+        for &component in prefix.iter() {
+            if let Some(sub_module) = module.sub_modules.get(component) {
+                module = sub_module;
+            } else { // if !recurse_to_parent {
+                return None;
+            } /* else {
+                // There is the possibility that no types have been defined in the current module,
+                // but in outer ones. Just go as far as possible, and search there.
+                break;
+            } */
+        }
+
+        let mut current = module;
+
+        for &component in module_path.iter() {
+            if let Some(sub_module) = current.sub_modules.get(component) {
+                current = sub_module;
+            } else {
+                return None;
+            }
+        }
+
+        for (name, id) in current.declarations.iter() {
+            let id = *id;
+            let decl = &self.declarations[id];
+
+            if predicate(name, decl) {
+                return Some(id);
+            }
+        }
+
+        None
+    }
+
+    pub fn find_decl_id<F: Fn(&str, &ForwardDecl) -> bool>(&self, prefix: &[&str], module_path: &[(&str, Span)], predicate: F, span: Span) -> Result<DeclId, Span> {
         // Keep in sync with TypeStorage::get_type_id_by_type_reference_part
         let mut module_stack = ne_vec![&self.top_level_module];
 
         for &component in prefix.iter() {
             if let Some(sub_module) = module_stack.last().sub_modules.get(component) {
                 module_stack.push(sub_module);
-            } else if !recurse_to_parent {
-                return None;
-            } else {
+            } else { // if recurse_to_parent {
                 // There is the possibility that no types have been defined in the current module,
                 // but in outer ones. Just go as far as possible, and search there.
                 break;
@@ -106,15 +142,15 @@ impl ForwardDeclStorage {
         for module in module_stack.iter().copied().rev() {
             let mut current = module;
 
-            for (i, &component) in module_path.iter().enumerate() {
-                if let Some(sub_module) = current.sub_modules.get(component) {
+            for (i, (component, component_span)) in module_path.iter().enumerate() {
+                if let Some(sub_module) = current.sub_modules.get(*component) {
                     current = sub_module;
-                } else if recurse_to_parent && i == 0 {
+                } else if i == 0 {
                     // If this is the first component that is not found in this module, keep
                     // searching in the parent module.
                     continue 'outer;
                 } else {
-                    return None;
+                    return Err(*component_span);
                 }
             }
 
@@ -123,16 +159,12 @@ impl ForwardDeclStorage {
                 let decl = &self.declarations[id];
 
                 if predicate(name, decl) {
-                    return Some(id);
+                    return Ok(id);
                 }
-            }
-
-            if !recurse_to_parent {
-                return None;
             }
         }
 
-        None
+        Err(span)
     }
 }
 

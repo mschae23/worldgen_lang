@@ -2,7 +2,7 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use non_empty_vec::ne_vec;
+use non_empty_vec::{ne_vec, NonEmpty};
 use crate::compiler::ast::simple::{PrimitiveTypeKind, TypePart, TypeReferencePart};
 use crate::compiler::error::FileId;
 use crate::compiler::error::span::Span;
@@ -74,6 +74,7 @@ impl TypeStorage {
         }
     }
 
+    #[inline]
     pub fn get(&self, type_id: TypeId) -> Option<&SimpleTypeInfo> {
         self.types.get(type_id)
     }
@@ -121,6 +122,7 @@ impl TypeStorage {
     }
 
     pub fn get_type_id_by_type_reference_part<'source>(&self, prefix: &[&str], part: &TypeReferencePart<'source>) -> Result<TypeId, (&'source str, Span)> {
+        // Keep in sync with ForwardDeclStorage::find_decl_id
         let mut module_stack = ne_vec![&self.top_level_module];
 
         for &component in prefix.iter() {
@@ -223,110 +225,115 @@ impl Default for TypeModule {
     }
 }
 
+pub type EnvironmentId = usize;
+
+pub const GLOBAL_ENVIRONMENT_ID: EnvironmentId = 0;
+pub const GLOBAL_IMPORT_ENVIRONMENT_ID: EnvironmentId = 1;
+
 #[derive(Debug)]
-pub struct SimpleDeclStorage {
-    decls: Vec<SimpleDecl>,
+pub struct TypeEnvironment {
+    pub sub_environments: HashMap<String, EnvironmentId>,
 }
 
-impl SimpleDeclStorage {
+impl TypeEnvironment {
     pub fn new() -> Self {
-        SimpleDeclStorage {
-            decls: Vec::new(),
+        TypeEnvironment {
+            sub_environments: HashMap::new(),
         }
-    }
-
-    pub fn insert(&mut self, decl: SimpleDecl) {
-        self.decls.push(decl);
-    }
-}
-
-impl Default for SimpleDeclStorage {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
 #[derive(Debug)]
 pub struct NameResolution {
-    decls: SimpleDeclStorage,
+    // Type environments always occupy 2 IDs and 2 slots in the stack:
+    // a normal type environment and an import type environment
+    type_environments: NonEmpty<TypeEnvironment>, // by ID
+    type_environment_stack: NonEmpty<EnvironmentId>,
 }
 
 impl NameResolution {
     pub fn new() -> Self {
         NameResolution {
-            decls: SimpleDeclStorage::new(),
+            type_environments: ne_vec![TypeEnvironment::new(), TypeEnvironment::new()],
+            type_environment_stack: NonEmpty::new(GLOBAL_ENVIRONMENT_ID),
         }
     }
 
-    pub fn get_simple_decls(&self) -> &SimpleDeclStorage {
-        &self.decls
+    #[inline]
+    pub fn get_type_environment_by_id(&self, id: EnvironmentId) -> &TypeEnvironment {
+        &self.type_environments[id]
     }
 
-    pub fn get_simple_decls_mut(&mut self) -> &mut SimpleDeclStorage {
-        &mut self.decls
+    #[inline]
+    pub fn get_type_environment_by_id_mut(&mut self, id: EnvironmentId) -> &mut TypeEnvironment {
+        &mut self.type_environments[id]
+    }
+
+    #[inline]
+    pub fn get_current_type_environment(&self) -> &TypeEnvironment {
+        self.get_type_environment_by_id(*self.type_environment_stack.last())
+    }
+
+    #[inline]
+    pub fn get_current_type_environment_mut(&mut self) -> &mut TypeEnvironment {
+        self.get_type_environment_by_id_mut(*self.type_environment_stack.last())
+    }
+
+    #[inline]
+    pub fn get_current_import_environment(&self) -> &TypeEnvironment {
+        assert!(self.is_normal_environment(*self.type_environment_stack.last()), "An import environment is on the type environment stack");
+
+        self.get_type_environment_by_id(*self.type_environment_stack.last() + 1)
+    }
+
+    #[inline]
+    pub fn is_normal_environment(&self, id: EnvironmentId) -> bool {
+        id % 2 == 0
+    }
+
+    #[inline]
+    pub fn is_import_environment(&self, id: EnvironmentId) -> bool {
+        id % 2 == 1
+    }
+
+    pub fn open_type_environment(&mut self, name: String) -> EnvironmentId {
+        let current = self.get_current_type_environment();
+
+        // Don't recurse into parent environments here; nested modules with the same name are different
+        let existing_id = current.sub_environments.get(&name).copied()
+            .or_else(|| self.get_current_import_environment().sub_environments.get(&name).copied());
+
+        let id = if let Some(existing_id) = existing_id {
+            existing_id
+        } else {
+            let next_id: EnvironmentId = self.type_environments.len().into();
+            assert!(self.is_normal_environment(next_id), "New type environment `{}` gets an odd ID: {}", &name, next_id);
+
+            self.type_environments.push(TypeEnvironment::new()); // the new type environment
+            self.type_environments.push(TypeEnvironment::new()); // the new import environment
+
+            next_id
+        };
+
+        // This should be done in both cases (already existing or new environment).
+        // If the environment already existed, it needs to be added to the main environment
+        // in case the module is from the import environment, or it will be unimportable.
+        self.get_current_type_environment_mut().sub_environments.insert(name, id);
+        self.type_environment_stack.push(id);
+        id
+    }
+
+    pub fn close_type_environment(&mut self) {
+        // This assert is actually redundant, because type_environment_stack is a NonEmpty,
+        // but it's probably better to do it anyway, and it also has a better panic message.
+        assert!(<NonZeroUsize as Into<usize>>::into(self.type_environment_stack.len()) > 1, "Tried to close the global type environment");
+
+        self.type_environment_stack.pop();
     }
 }
 
 impl Default for NameResolution {
     fn default() -> Self {
         NameResolution::new()
-    }
-}
-
-#[derive(Debug)]
-pub struct SimpleModuleDecl {
-    pub name: PositionedName,
-    pub declarations: HashMap<String, SimpleDecl>,
-    pub unnamed_templates: Vec<SimpleUnnamedTemplateDecl>,
-}
-
-#[derive(Debug)]
-pub struct SimpleClassDecl {
-    pub name: PositionedName,
-    pub type_id: TypeId,
-    pub interface: bool,
-    pub parameters: Vec<(PositionedName, TypeId)>,
-}
-
-#[derive(Debug)]
-pub struct SimpleTypeAliasDecl {
-    pub name: PositionedName,
-    pub type_id: TypeId,
-}
-
-#[derive(Debug)]
-pub enum SimpleUnnamedTemplateData {
-    Conversion {
-        // TODO
-    },
-    Optimize {
-        // TODO
-    },
-}
-
-#[derive(Debug)]
-pub struct SimpleUnnamedTemplateDecl {
-    pub name_span: Span, // span of what would be the name for normal templates
-    pub data: SimpleUnnamedTemplateData,
-}
-
-#[derive(Debug)]
-pub enum SimpleDecl {
-    Module(SimpleModuleDecl),
-    Class(SimpleClassDecl),
-    TypeAlias(SimpleTypeAliasDecl),
-}
-
-impl SimpleDecl {
-    pub fn name(&self) -> &PositionedName {
-        match self {
-            Self::Module(decl) => &decl.name,
-            Self::Class(decl) => &decl.name,
-            Self::TypeAlias(decl) => &decl.name,
-        }
-    }
-
-    pub fn span(&self) -> Span {
-        self.name().span
     }
 }
