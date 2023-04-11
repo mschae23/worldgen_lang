@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use non_empty_vec::ne_vec;
-use crate::compiler::ast::simple::Decl;
+use crate::compiler::ast::simple::{Decl, VariableKind};
 use crate::compiler::error::span::Span;
 use crate::compiler::name::{TypeId, TypeStorage};
 
@@ -86,13 +86,15 @@ impl ForwardDeclStorage {
         Err(name_debug_info)
     }
 
-    pub fn find_decl_id_for_duplicate<F: Fn(&str, &ForwardDecl) -> bool>(&self, prefix: &[&str], module_path: &[&str], predicate: F) -> Option<DeclId> {
+    pub fn find_decl_id_for_duplicate<F: Fn(&str, &ForwardDecl) -> bool>(&self, prefix: &[&str], module_path: &[&str], recurse_to_parent: bool, predicate: F) -> Option<DeclId> {
         // Keep in sync with TypeStorage::get_type_id_by_type_reference_part
         let mut module_stack = ne_vec![&self.top_level_module];
 
         for &component in prefix.iter() {
             if let Some(sub_module) = module_stack.last().sub_modules.get(component) {
                 module_stack.push(sub_module);
+            } else if !recurse_to_parent {
+                return None;
             } else {
                 // There is the possibility that no types have been defined in the current module,
                 // but in outer ones. Just go as far as possible, and search there.
@@ -107,7 +109,7 @@ impl ForwardDeclStorage {
             for (i, &component) in module_path.iter().enumerate() {
                 if let Some(sub_module) = current.sub_modules.get(component) {
                     current = sub_module;
-                } else if i == 0 {
+                } else if recurse_to_parent && i == 0 {
                     // If this is the first component that is not found in this module, keep
                     // searching in the parent module.
                     continue 'outer;
@@ -123,6 +125,10 @@ impl ForwardDeclStorage {
                 if predicate(name, decl) {
                     return Some(id);
                 }
+            }
+
+            if !recurse_to_parent {
+                return None;
             }
         }
 
@@ -183,12 +189,20 @@ pub struct ForwardOptimizeDecl {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForwardVariableDecl {
+    // Can't put expr type here, because of type inference,
+    // which happens later
+    pub kind: VariableKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForwardDecl {
     Class(ForwardClassDecl),
     TypeAlias(ForwardTypeAliasDecl),
     Template(ForwardTemplateDecl),
     Conversion(ForwardConversionDecl),
     Optimize(ForwardOptimizeDecl),
+    Variable(ForwardVariableDecl),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

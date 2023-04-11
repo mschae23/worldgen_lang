@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::rc::Rc;
-use crate::compiler::ast::forward::{ForwardClassDecl, ForwardConversionDecl, ForwardDecl, ForwardDeclareResult, ForwardDeclStorage, ForwardOptimizeDecl, ForwardTemplateDecl, ForwardTypeAliasDecl};
+use crate::compiler::ast::forward::{ForwardClassDecl, ForwardConversionDecl, ForwardDecl, ForwardDeclareResult, ForwardDeclStorage, ForwardOptimizeDecl, ForwardTemplateDecl, ForwardTypeAliasDecl, ForwardVariableDecl};
 use crate::compiler::ast::simple::{Decl, TemplateKind};
 use crate::compiler::error::{Diagnostic, DiagnosticContext, ErrorReporter, FileId, NoteKind, Severity};
 use crate::compiler::error::span::Span;
@@ -187,6 +187,11 @@ impl<'source> ForwardDeclarer {
                         to_process.push(ProcessVariant::ModuleStart(name.source()));
                     },
                     Decl::Interface { name, parameters, .. } => {
+                        if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], false, |name2, decl2| !matches!(decl2, ForwardDecl::Template(_)) && name.source() == name2) {
+                            let previous_span = storage.get_span_by_id(previous_id);
+                            self.error(name.span(), DeclError::DeclAlreadyDeclared(format!("`{}`", name.source()), Some(previous_span)), reporter);
+                        }
+
                         path.push(name.source());
 
                         let type_id = types.get_type_id_by_path(&path).expect("Internal compiler error: type for interface decl can't be found");
@@ -216,6 +221,11 @@ impl<'source> ForwardDeclarer {
                         path.pop();
                     },
                     Decl::Class { name, parameters, .. } => {
+                        if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], false, |name2, decl2| !matches!(decl2, ForwardDecl::Template(_)) && name.source() == name2) {
+                            let previous_span = storage.get_span_by_id(previous_id);
+                            self.error(name.span(), DeclError::DeclAlreadyDeclared(format!("`{}`", name.source()), Some(previous_span)), reporter);
+                        }
+
                         path.push(name.source());
 
                         let type_id = types.get_type_id_by_path(&path).expect("Internal compiler error: type for class decl can't be found");
@@ -245,6 +255,11 @@ impl<'source> ForwardDeclarer {
                         path.pop();
                     },
                     Decl::TypeAlias { name, to, .. } => {
+                        if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], false, |name2, decl2| !matches!(decl2, ForwardDecl::Template(_)) && name.source() == name2) {
+                            let previous_span = storage.get_span_by_id(previous_id);
+                            self.error(name.span(), DeclError::DeclAlreadyDeclared(format!("`{}`", name.source()), Some(previous_span)), reporter);
+                        }
+
                         path.push(name.source());
 
                         let type_id = types.get_type_id_by_path(&path).expect("Internal compiler error: type for type alias decl can't be found");
@@ -298,7 +313,7 @@ impl<'source> ForwardDeclarer {
                             _ => None,
                         };
 
-                        if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], |_, decl| match decl {
+                        if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], false, |_, decl| match decl {
                             ForwardDecl::Template(decl) => matches!(kind, TemplateKind::Template { .. })
                                 && decl.parameters == parameter_types && decl.return_type == return_type,
                             ForwardDecl::Conversion(decl) => matches!(kind, TemplateKind::Conversion { .. })
@@ -346,9 +361,21 @@ impl<'source> ForwardDeclarer {
                             }
                         }
                     },
+                    Decl::Variable { kind, name, .. } => {
+                        if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], false, |name2, decl2| !matches!(decl2, ForwardDecl::Template(_)) && name.source() == name2) {
+                            let previous_span = storage.get_span_by_id(previous_id);
+                            self.error(name.span(), DeclError::DeclAlreadyDeclared(format!("`{}`", name.source()), Some(previous_span)), reporter);
+                        }
+
+                        path.push(name.source());
+                        storage.insert(&path, ForwardDecl::Variable(ForwardVariableDecl {
+                            kind: *kind,
+                        }), name.span());
+                        path.pop();
+                    },
+                    // These don't need forward declarations
                     Decl::Include { .. } => {},
                     Decl::Import { .. } => {},
-                    Decl::Variable { .. } => {},
                     Decl::Error => {},
                 },
                 ProcessVariant::ModuleStart(name) => {
