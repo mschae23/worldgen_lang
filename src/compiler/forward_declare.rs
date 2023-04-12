@@ -117,7 +117,7 @@ impl<'source> ForwardDeclarer {
             match variant {
                 ProcessVariant::Decl(decl) => {
                     match decl {
-                        Decl::Module { name, declarations } => {
+                        Decl::Module { name, declarations, key_span: _key_span } => {
                             to_process.push(ProcessVariant::ModuleEnd);
                             to_process.extend(declarations.iter().map(ProcessVariant::Decl).rev());
                             to_process.push(ProcessVariant::ModuleStart(name.source()));
@@ -181,7 +181,7 @@ impl<'source> ForwardDeclarer {
         while let Some(variant) = to_process.pop() {
             match variant {
                 ProcessVariant::Decl(decl) => match decl {
-                    Decl::Module { name, declarations, } => {
+                    Decl::Module { name, declarations, key_span: _key_span, } => {
                         to_process.push(ProcessVariant::ModuleEnd);
                         to_process.extend(declarations.iter().map(ProcessVariant::Decl).rev());
                         to_process.push(ProcessVariant::ModuleStart(name.source()));

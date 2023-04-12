@@ -3,7 +3,7 @@ use lazy_static::lazy_static;
 use non_empty_vec::ne_vec;
 use crate::compiler::ast::simple::{ClassImplementsPart, ClassReprPart, Decl, Expr, ParameterPart, PrimitiveTypeKind, SingleImplementsPart, TemplateDeclKind, TemplateExpr, TemplateKind, TypePart, TypeReferencePart, VariableKind};
 use crate::compiler::error::{ErrorReporter, Diagnostic, DiagnosticContext, Severity, NoteKind, FileId};
-use crate::compiler::error::span::Span;
+use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::compiler::lexer::{Lexer, LexerErrorReporter, Token, TokenType};
 
 lazy_static! {
@@ -247,7 +247,11 @@ impl<'source> Parser<'source> {
         }
 
         self.expect_after(TokenType::BracketRight, "`}`", "statements in module", Some(module_span), reporter, lexer_reporter);
-        Decl::Module { name, declarations }
+
+        Decl::Module {
+            key_span: SpanWithFile::new(self.file_id, module_span),
+            name, declarations
+        }
     }
 
     fn parse_interface_declaration(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Decl<'source> {
@@ -295,6 +299,7 @@ impl<'source> Parser<'source> {
         self.expect_declaration_end(reporter, lexer_reporter);
 
         Decl::Interface {
+            key_span: SpanWithFile::new(self.file_id, interface_span),
             name,
             parameters,
             implements,
@@ -347,6 +352,7 @@ impl<'source> Parser<'source> {
         self.expect_declaration_end(reporter, lexer_reporter);
 
         Decl::Class {
+            key_span: SpanWithFile::new(self.file_id, class_span),
             name,
             parameters,
             implements,
@@ -371,6 +377,7 @@ impl<'source> Parser<'source> {
         self.expect_declaration_end(reporter, lexer_reporter);
 
         Decl::TypeAlias {
+            key_span: SpanWithFile::new(self.file_id, type_span),
             name,
             to,
             condition,
@@ -378,12 +385,14 @@ impl<'source> Parser<'source> {
     }
 
     fn parse_template_declaration(&mut self, decl_kind: TemplateDeclKind, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Decl<'source> {
-        let template_span = self.previous.span();
+        let mut template_span = self.previous.span();
 
         let kind = if decl_kind == TemplateDeclKind::Template {
             if self.matches(TokenType::Type, lexer_reporter) {
+                template_span = template_span.mix(self.previous.span());
+
                 TemplateKind::Conversion {
-                    span: self.previous.span(),
+                    span: template_span,
                 }
             } else {
                 self.expect_any_after(&*ALLOWED_TEMPLATE_NAME_TYPES, "name", "`template`", Some(template_span), reporter, lexer_reporter);
@@ -437,6 +446,7 @@ impl<'source> Parser<'source> {
         let expr = self.parse_block_template_expression(reporter, lexer_reporter);
 
         Decl::Template {
+            key_span: SpanWithFile::new(self.file_id, template_span),
             kind,
             parameters,
             return_type,
@@ -454,6 +464,7 @@ impl<'source> Parser<'source> {
         self.expect_declaration_end(reporter, lexer_reporter);
 
         Decl::Include {
+            key_span: SpanWithFile::new(self.file_id, include_span),
             path,
         }
     }
@@ -493,6 +504,7 @@ impl<'source> Parser<'source> {
         self.expect_declaration_end(reporter, lexer_reporter);
 
         Decl::Import {
+            key_span: SpanWithFile::new(self.file_id, import_span),
             path,
             selector,
             span: Span::new(start_pos, end_pos),
@@ -501,6 +513,7 @@ impl<'source> Parser<'source> {
 
     fn parse_variable_declaration(&mut self, variable_span: Option<Span>, kind: VariableKind, name: Token<'source>, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> Decl<'source> {
         let start_pos = variable_span.map(|span| span.start).unwrap_or_else(|| name.span.start);
+        let key_span = variable_span.unwrap_or(self.previous.span());
 
         self.expect_after(TokenType::Assign, "`=`", "variable name", variable_span, reporter, lexer_reporter);
         let expr = self.parse_expression(reporter, lexer_reporter);
@@ -509,6 +522,7 @@ impl<'source> Parser<'source> {
         self.expect_declaration_end(reporter, lexer_reporter);
 
         Decl::Variable {
+            key_span: SpanWithFile::new(self.file_id, key_span),
             kind,
             name,
             expr,

@@ -3,9 +3,8 @@ use std::rc::Rc;
 use non_empty_vec::NonEmpty;
 use crate::compiler::ast::forward::{ForwardDecl, ForwardDeclStorage};
 use crate::compiler::ast::simple::{ClassImplementsPart, ClassReprPart, Decl, Expr, ParameterPart, TemplateExpr, TemplateKind, TypePart, VariableKind};
-use crate::compiler::ast::typed::TypedDecl;
 use crate::compiler::error::{Diagnostic, DiagnosticContext, ErrorReporter, FileId, NoteKind, Severity};
-use crate::compiler::error::span::Span;
+use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::compiler::lexer::Token;
 use crate::compiler::name::{NameResolution, TypeStorage};
 use crate::Config;
@@ -95,26 +94,26 @@ impl<'source> TypeChecker {
         while let Some(process) = process_stack.pop() {
             match process {
                 ProcessVariant::Decl(decl) => match decl {
-                    Decl::Module { name, declarations } => {
+                    Decl::Module { name, declarations, key_span: _key_span } => {
                         process_stack.push(ProcessVariant::ModuleEnd);
                         process_stack.extend(declarations.into_iter()
                             .map(ProcessVariant::Decl).rev());
                         process_stack.push(ProcessVariant::ModuleStart(name.source()));
                     },
-                    Decl::Interface { name, parameters, implements, class_repr, parameter_span } =>
-                        self.check_interface_decl(name, parameters, implements, class_repr, parameter_span, &module_path, reporter),
-                    Decl::Class { name, parameters, implements, class_repr, parameter_span } =>
-                        self.check_class_decl(name, parameters, implements, class_repr, parameter_span, reporter),
-                    Decl::TypeAlias { name, to, condition } =>
-                        self.check_type_alias_decl(name, to, condition, reporter),
-                    Decl::Template { kind, parameters, return_type, expr, parameter_span } =>
-                        self.check_template_decl(kind, parameters, return_type, expr, parameter_span, reporter),
-                    Decl::Include { path } =>
-                        self.check_include(path, &mut process_stack, reporter),
-                    Decl::Import { path, selector, span } =>
-                        self.check_import(path, selector, span, reporter),
-                    Decl::Variable { kind, name, expr, span } =>
-                        self.check_variable(kind, name, expr, span, reporter),
+                    Decl::Interface { key_span, name, parameters, implements, class_repr, parameter_span } =>
+                        self.check_interface_decl(key_span, name, parameters, implements, class_repr, parameter_span, &module_path, reporter),
+                    Decl::Class { key_span, name, parameters, implements, class_repr, parameter_span } =>
+                        self.check_class_decl(key_span, name, parameters, implements, class_repr, parameter_span, reporter),
+                    Decl::TypeAlias { key_span, name, to, condition } =>
+                        self.check_type_alias_decl(key_span, name, to, condition, reporter),
+                    Decl::Template { key_span, kind, parameters, return_type, expr, parameter_span } =>
+                        self.check_template_decl(key_span, kind, parameters, return_type, expr, parameter_span, reporter),
+                    Decl::Include { key_span, path } =>
+                        self.check_include(key_span, path, &mut process_stack, reporter),
+                    Decl::Import { key_span, path, selector, span } =>
+                        self.check_import(key_span, path, selector, span, reporter),
+                    Decl::Variable { key_span, kind, name, expr, span } =>
+                        self.check_variable(key_span, kind, name, expr, span, reporter),
                     Decl::Error => {},
                 },
                 ProcessVariant::ModuleStart(name) => {
@@ -129,8 +128,8 @@ impl<'source> TypeChecker {
         }
     }
 
-    fn check_interface_decl(&mut self, name: Token<'source>, parameters: Vec<ParameterPart<'source>>, implements: Option<ClassImplementsPart<'source>>, class_repr: Option<ClassReprPart<'source>>, parameter_span: Span, module_path: &[&'source str], reporter: &mut TypeErrorReporter<'source>) {
-        self.error(name.span(), TypeError::Unimplemented("check interface decl"), reporter);
+    fn check_interface_decl(&mut self, key_span: SpanWithFile, name: Token<'source>, parameters: Vec<ParameterPart<'source>>, implements: Option<ClassImplementsPart<'source>>, class_repr: Option<ClassReprPart<'source>>, parameter_span: Span, module_path: &[&'source str], reporter: &mut TypeErrorReporter<'source>) {
+        self.error(key_span.span(), TypeError::Unimplemented("check interface decl"), reporter);
 
         let forward_decl_id = self.forward_decls.find_decl_id_for_duplicate(module_path, &[], |name2, decl|
             !matches!(decl, ForwardDecl::Template(_)) && name.source() == name2)
@@ -142,32 +141,34 @@ impl<'source> TypeChecker {
             ForwardDecl::Class(decl) => {
                 // TODO
             },
-            _ => panic!("Internal compiler error: forward decl for `{}` interface is not a class", name.source()),
+            _ => {
+                println_debug!("Internal compiler error: forward decl for `{}` interface is not a class", name.source());
+            },
         }
     }
 
-    fn check_class_decl(&mut self, name: Token<'source>, parameters: Vec<ParameterPart<'source>>, implements: ClassImplementsPart<'source>, class_repr: Option<ClassReprPart<'source>>, parameter_span: Span, reporter: &mut TypeErrorReporter<'source>) {
-        self.error(name.span(), TypeError::Unimplemented("check class decl"), reporter);
+    fn check_class_decl(&mut self, key_span: SpanWithFile, name: Token<'source>, parameters: Vec<ParameterPart<'source>>, implements: ClassImplementsPart<'source>, class_repr: Option<ClassReprPart<'source>>, parameter_span: Span, reporter: &mut TypeErrorReporter<'source>) {
+        self.error(key_span.span(), TypeError::Unimplemented("check class decl"), reporter);
     }
 
-    fn check_type_alias_decl(&mut self, name: Token<'source>, to: TypePart<'source>, condition: Option<Expr<'source>>, reporter: &mut TypeErrorReporter<'source>) {
-        self.error(name.span(), TypeError::Unimplemented("check type alias decl"), reporter);
+    fn check_type_alias_decl(&mut self, key_span: SpanWithFile, name: Token<'source>, to: TypePart<'source>, condition: Option<Expr<'source>>, reporter: &mut TypeErrorReporter<'source>) {
+        self.error(key_span.span(), TypeError::Unimplemented("check type alias decl"), reporter);
     }
 
-    fn check_template_decl(&mut self, kind: TemplateKind<'source>, parameters: Vec<ParameterPart<'source>>, return_type: TypePart<'source>, expr: TemplateExpr<'source>, parameter_span: Span, reporter: &mut TypeErrorReporter<'source>) {
-        self.error(kind.span(), TypeError::Unimplemented("check template decl"), reporter);
+    fn check_template_decl(&mut self, key_span: SpanWithFile, kind: TemplateKind<'source>, parameters: Vec<ParameterPart<'source>>, return_type: TypePart<'source>, expr: TemplateExpr<'source>, parameter_span: Span, reporter: &mut TypeErrorReporter<'source>) {
+        self.error(key_span.span(), TypeError::Unimplemented("check template decl"), reporter);
     }
 
-    fn check_include(&mut self, path: Token<'source>, process_stack: &mut Vec<ProcessVariant>, reporter: &mut TypeErrorReporter<'source>) {
-        self.error(path.span(), TypeError::Unimplemented("check include decl"), reporter);
+    fn check_include(&mut self, key_span: SpanWithFile, path: Token<'source>, process_stack: &mut Vec<ProcessVariant>, reporter: &mut TypeErrorReporter<'source>) {
+        self.error(key_span.span(), TypeError::Unimplemented("check include decl"), reporter);
     }
 
-    fn check_import(&mut self, path: NonEmpty<Token<'source>>, selector: Option<NonEmpty<Token<'source>>>, span: Span, reporter: &mut TypeErrorReporter<'source>) {
-        self.error(span, TypeError::Unimplemented("check import decl"), reporter);
+    fn check_import(&mut self, key_span: SpanWithFile, path: NonEmpty<Token<'source>>, selector: Option<NonEmpty<Token<'source>>>, span: Span, reporter: &mut TypeErrorReporter<'source>) {
+        self.error(key_span.span(), TypeError::Unimplemented("check import decl"), reporter);
     }
 
-    fn check_variable(&mut self, kind: VariableKind, name: Token<'source>, expr: Expr<'source>, span: Span, reporter: &mut TypeErrorReporter<'source>) {
-        self.error(name.span(), TypeError::Unimplemented("check variable decl"), reporter);
+    fn check_variable(&mut self, key_span: SpanWithFile, kind: VariableKind, name: Token<'source>, expr: Expr<'source>, span: Span, reporter: &mut TypeErrorReporter<'source>) {
+        self.error(key_span.span(), TypeError::Unimplemented("check variable decl"), reporter);
     }
 
     fn error(&self, span: Span, message: TypeError<'source>, reporter: &mut TypeErrorReporter<'source>) {

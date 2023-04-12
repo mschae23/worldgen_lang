@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::fmt::{Debug, Display, Formatter};
 use non_empty_vec::NonEmpty;
-use crate::compiler::error::span::Span;
+use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::compiler::lexer::Token;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,10 +131,12 @@ pub enum VariableKind {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Decl<'source> {
     Module {
+        key_span: SpanWithFile,
         name: Token<'source>,
         declarations: Vec<Decl<'source>>,
     },
     Interface {
+        key_span: SpanWithFile,
         name: Token<'source>,
         parameters: Vec<ParameterPart<'source>>,
         implements: Option<ClassImplementsPart<'source>>,
@@ -142,6 +144,7 @@ pub enum Decl<'source> {
         parameter_span: Span,
     },
     Class {
+        key_span: SpanWithFile,
         name: Token<'source>,
         parameters: Vec<ParameterPart<'source>>,
         implements: ClassImplementsPart<'source>,
@@ -149,11 +152,13 @@ pub enum Decl<'source> {
         parameter_span: Span,
     },
     TypeAlias {
+        key_span: SpanWithFile,
         name: Token<'source>,
         to: TypePart<'source>,
         condition: Option<Expr<'source>>,
     },
     Template {
+        key_span: SpanWithFile,
         kind: TemplateKind<'source>,
         parameters: Vec<ParameterPart<'source>>,
         return_type: TypePart<'source>,
@@ -161,14 +166,17 @@ pub enum Decl<'source> {
         parameter_span: Span,
     },
     Include {
+        key_span: SpanWithFile,
         path: Token<'source>,
     },
     Import {
+        key_span: SpanWithFile,
         path: NonEmpty<Token<'source>>,
         selector: Option<NonEmpty<Token<'source>>>, // None represents star import (import something::*)
         span: Span, // only path and selector, doesn't include the "import" keyword or semicolon
     },
     Variable {
+        key_span: SpanWithFile,
         kind: VariableKind,
         name: Token<'source>,
         expr: Expr<'source>,

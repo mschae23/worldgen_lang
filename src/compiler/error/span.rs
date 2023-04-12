@@ -1,4 +1,5 @@
 use std::fmt::{Debug, Formatter};
+use crate::compiler::error::FileId;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Span {
@@ -49,5 +50,37 @@ impl Span {
 impl Debug for Span {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "Span({}..{})", self.start, self.end)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SpanWithFile {
+    pub file_id: FileId,
+    pub span: Span,
+}
+
+impl SpanWithFile {
+    pub fn new(file_id: FileId, span: Span) -> Self {
+        SpanWithFile {
+            file_id, span,
+        }
+    }
+
+    pub fn file_id(&self) -> FileId {
+        self.file_id
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+
+    pub fn as_tuple(self) -> (FileId, Span) {
+        (self.file_id, self.span)
+    }
+}
+
+impl Debug for SpanWithFile {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Span({}, {}..{})", self.file_id, self.span.start, self.span.end)
     }
 }
