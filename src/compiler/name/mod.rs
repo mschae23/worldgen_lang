@@ -53,7 +53,7 @@ pub struct TypeStorage {
     types: Vec<SimpleTypeInfo>,
     top_level_module: TypeModule,
     type_path_lookup: Vec<Option<PathBuf>>,
-    type_span_lookup: Vec<Option<(Span, FileId)>>,
+    type_span_lookup: Vec<Option<(FileId, Span)>>,
 }
 
 impl TypeStorage {
@@ -84,7 +84,8 @@ impl TypeStorage {
         if type_id < PRIMITIVE_TYPE_COUNT {
             None
         } else {
-            self.type_path_lookup.get(type_id - PRIMITIVE_TYPE_COUNT).and_then(|path| path.as_ref().map(|path| path.as_path()))
+            use std::borrow::Borrow;
+            self.type_path_lookup.get(type_id - PRIMITIVE_TYPE_COUNT).and_then(|path| path.as_ref().map(PathBuf::borrow))
         }
     }
 
@@ -116,7 +117,7 @@ impl TypeStorage {
                 let id = self.types.len();
                 self.types.push(SimpleTypeInfo::Template);
                 self.type_path_lookup.push(None);
-                self.type_span_lookup.push(Some((args_span.mix(return_type.span()), file_id)));
+                self.type_span_lookup.push(Some((file_id, args_span.mix(return_type.span()))));
                 Ok(id)
             },
         }
@@ -167,11 +168,11 @@ impl TypeStorage {
         Err((first.source(), first.span()))
     }
 
-    pub fn get_span(&self, type_id: TypeId) -> Option<(Span, FileId)> {
+    pub fn get_span(&self, type_id: TypeId) -> Option<(FileId, Span)> {
         if type_id < PRIMITIVE_TYPE_COUNT {
             None
         } else {
-            self.type_span_lookup.get(type_id - PRIMITIVE_TYPE_COUNT).and_then(|span| span.as_ref().map(|&(span, file)| (span, file)))
+            self.type_span_lookup.get(type_id - PRIMITIVE_TYPE_COUNT).and_then(|o| o.as_ref()).copied()
         }
     }
 
@@ -193,7 +194,7 @@ impl TypeStorage {
 
         self.types.push(type_info);
         self.type_path_lookup.push(Some(path.iter().collect()));
-        self.type_span_lookup.push(Some((span, file_id)));
+        self.type_span_lookup.push(Some((file_id, span)));
 
         Ok(id)
     }

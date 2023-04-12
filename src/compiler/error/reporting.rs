@@ -17,10 +17,23 @@ pub enum CompileStage {
     TypeChecker,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
 pub enum Severity {
-    Error, Warning,
+    Warning, Error,
 }
+
+impl Severity {
+    pub fn max(self, other: Self) -> Self {
+        if other > self {
+            other
+        } else {
+            self
+        }
+    }
+}
+
+const SEVERITY_COUNT: usize = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoteKind {
@@ -84,7 +97,7 @@ pub trait Diagnostic<D>: Debug {
 
     fn primary_annotation(&self, context: &DiagnosticContext<'_, D>) -> Option<String>;
 
-    fn additional_annotations(&self, context: &DiagnosticContext<'_, D>) -> Vec<(Span, Option<String>)>;
+    fn additional_annotations(&self, context: &DiagnosticContext<'_, D>) -> Vec<(FileId, Span, Option<String>)>;
 
     fn primary_note(&self, context: &DiagnosticContext<'_, D>) -> Option<(NoteKind, String)>;
 
@@ -100,7 +113,7 @@ pub struct DiagnosticData {
     pub severity: Severity,
     pub message: String,
     pub primary_annotation: Option<String>,
-    pub additional_annotations: Vec<(Span, Option<String>)>,
+    pub additional_annotations: Vec<(FileId, Span, Option<String>)>,
     pub primary_note: Option<(NoteKind, String)>,
     pub additional_notes: Vec<(NoteKind, String)>,
     pub suppressed_messages: u32,
@@ -110,7 +123,7 @@ impl DiagnosticData {
     #[allow(clippy::too_many_arguments)]
     pub fn new(file_id: FileId, span: Span, stage: CompileStage,
                name: &'static str, severity: Severity, message: String,
-               primary_annotation: Option<String>, additional_annotations: Vec<(Span, Option<String>)>,
+               primary_annotation: Option<String>, additional_annotations: Vec<(FileId, Span, Option<String>)>,
                primary_note: Option<(NoteKind, String)>, additional_notes: Vec<(NoteKind, String)>,
                suppressed_messages: u32) -> Self {
         DiagnosticData {
@@ -129,6 +142,8 @@ pub struct ErrorReporting {
     file_ids: HashMap<Rc<PathBuf>, FileId>,
     files: Vec<(String, Rc<PathBuf>)>,
     diagnostics: Vec<DiagnosticData>,
+    diagnostic_counts: [usize; SEVERITY_COUNT],
+    highest_severity: Option<Severity>,
 }
 
 impl ErrorReporting {
@@ -137,6 +152,7 @@ impl ErrorReporting {
             config, working_dir,
             file_ids: HashMap::new(), files: Vec::new(),
             diagnostics: Vec::new(),
+            diagnostic_counts: [0; SEVERITY_COUNT], highest_severity: None,
         }
     }
 
@@ -172,6 +188,9 @@ impl ErrorReporting {
             let primary_note = diagnostic.message.primary_note(&context);
             let additional_notes = diagnostic.message.additional_notes(&context);
 
+            self.diagnostic_counts[severity as u8 as usize] += 1;
+            self.highest_severity = self.highest_severity.map(|s| severity.max(s)).or(Some(severity));
+
             DiagnosticData::new(diagnostic.file_id, diagnostic.span, stage, name, severity, message,
                 primary_annotation, additional_annotations, primary_note, additional_notes, diagnostic.suppressed_messages.len() as u32)
         }));
@@ -179,6 +198,14 @@ impl ErrorReporting {
 
     pub fn has_diagnostics(&self) -> bool {
         !self.diagnostics.is_empty()
+    }
+
+    pub fn get_diagnostic_count_for_severity(&self, severity: Severity) -> usize {
+        self.diagnostic_counts[severity as u8 as usize]
+    }
+
+    pub fn get_highest_severity(&self) -> Option<Severity> {
+        self.highest_severity
     }
 
     // Prints with diagnostic_render
@@ -212,8 +239,8 @@ impl ErrorReporting {
 
                 d = d.with_annotation(primary_annotation);
 
-                for (span, label) in diagnostic.additional_annotations.iter() {
-                    let mut annotation = diagnostic_render::diagnostic::Annotation::new(AnnotationStyle::Secondary, diagnostic.file_id as usize,
+                for (file_id, span, label) in diagnostic.additional_annotations.iter() {
+                    let mut annotation = diagnostic_render::diagnostic::Annotation::new(AnnotationStyle::Secondary, *file_id as usize,
                         span.start as usize..span.end as usize);
 
                     if let Some(label) = label.as_ref() {

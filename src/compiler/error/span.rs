@@ -1,5 +1,4 @@
 use std::fmt::{Debug, Formatter};
-use crate::compiler::lexer::{Token, TokenPos};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Span {
@@ -12,10 +11,6 @@ impl Span {
         Span {
             start, end,
         }
-    }
-
-    pub fn from_pos(start: &TokenPos, end: &TokenPos) -> Self {
-        Self::new(start.index, end.index)
     }
 
     pub fn start(&self) -> u32 {
@@ -48,18 +43,6 @@ impl Span {
 
     pub fn includes(&self, other: &Self) -> bool {
         self.start <= other.start && self.end >= other.end
-    }
-}
-
-impl<'source> From<Token<'source>> for Span {
-    fn from(value: Token<'source>) -> Self {
-        Self::from_pos(&value.start, &value.end)
-    }
-}
-
-impl<'source> From<&Token<'source>> for Span {
-    fn from(value: &Token<'source>) -> Self {
-        Self::new(value.start.index, value.end.index)
     }
 }
 

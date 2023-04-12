@@ -26,7 +26,7 @@ pub struct ReadState<'source> {
 
 impl<'source> ReadState<'source> {
     pub fn tokenize(self) -> TokenizedState<'source> {
-        let lexer = Lexer::new(self.source);
+        let lexer = Lexer::new(self.source, self.file_id);
 
         TokenizedState {
             config: self.config, input: Rc::clone(&self.input), file_id: self.file_id,
@@ -45,7 +45,7 @@ impl<'source> TokenizedState<'source> {
         let mut lexer_reporter = reporting.create_for_stage(CompileStage::Lexer, self.file_id, ());
         let mut parser_reporter = reporting.create_for_stage(CompileStage::Parser,  self.file_id, ());
 
-        let mut parser = Parser::new(self.lexer);
+        let mut parser = Parser::new(self.lexer, self.file_id);
         let declarations = parser.parse(&mut parser_reporter, &mut lexer_reporter);
 
         reporting.submit(lexer_reporter);

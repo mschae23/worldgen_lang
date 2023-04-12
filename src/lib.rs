@@ -4,7 +4,7 @@ pub mod compiler;
 use std::path::PathBuf;
 use std::rc::Rc;
 use clap::Parser as ClapParser;
-use crate::compiler::error::ErrorReporting;
+use crate::compiler::error::{ErrorReporting, Severity};
 use crate::compiler::pipeline::CompileState;
 
 #[derive(ClapParser, Debug)]
@@ -42,18 +42,16 @@ pub fn run() -> Result<(), std::io::Error> {
         .forward_declare(&mut reporting)
         .check_types(&mut reporting);
 
-    // compile
+    if reporting.has_diagnostics() {
+        reporting.print_diagnostics_to_stderr();
+    }
+
+    if reporting.get_highest_severity().map(|severity| severity >= Severity::Error).unwrap_or(false) {
+        return Ok(());
+    }
 
     std::fs::create_dir_all(&config.target_dir)?;
     // let mut writer = JsonWriter::new(config.indentation.to_owned(), !config.no_pretty_print);
-
-    if reporting.has_diagnostics() {
-        reporting.print_diagnostics_to_stderr();
-    } else {
-        // for decl in &pipeline.declarations {
-        //     eprintln!("{:#?}", decl);
-        // }
-    }
 
     Ok(())
 }

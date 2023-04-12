@@ -13,8 +13,8 @@ pub type MessageMarker = ();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeclError<'source> {
-    TypeAlreadyDeclared(&'source str, Option<Span>),
-    DeclAlreadyDeclared(String, Option<Span>), // the string has to contain the `` part if it's a name
+    TypeAlreadyDeclared(&'source str, Option<(FileId, Span)>),
+    DeclAlreadyDeclared(String, Option<(FileId, Span)>), // the string has to contain the `` part if it's a name
     UnresolvedType(&'source str),
     ConversionParameterCount(usize),
 }
@@ -58,13 +58,13 @@ impl<'source> Diagnostic<MessageMarker> for DeclError<'source> {
         }
     }
 
-    fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(Span, Option<String>)> {
+    fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(FileId, Span, Option<String>)> {
         match self {
-            Self::TypeAlreadyDeclared(_, span) => if let Some(&span) = span.as_ref() {
-                vec![(span, Some(String::from("first declared here")))]
+            Self::TypeAlreadyDeclared(_, first) => if let Some(&(file_id, span)) = first.as_ref() {
+                vec![(file_id, span, Some(String::from("first declared here")))]
             } else { vec![] },
-            Self::DeclAlreadyDeclared(_, span) => if let Some(&span) = span.as_ref() {
-                vec![(span, Some(String::from("first declared here")))]
+            Self::DeclAlreadyDeclared(_, first) => if let Some(&(file_id, span)) = first.as_ref() {
+                vec![(file_id, span, Some(String::from("first declared here")))]
             } else { vec![] },
             _ => Vec::new(),
         }
@@ -127,7 +127,7 @@ impl<'source> ForwardDeclarer {
 
                             if let Err(previous_id) = storage.insert(&path, name.span(), self.file_id, SimpleTypeInfo::Class { interface: true, }) {
                                 let previous_span = storage.get_span(previous_id);
-                                self.error(name.span(), DeclError::TypeAlreadyDeclared(name.source(), previous_span.map(|(span, _)| span)), reporter);
+                                self.error(name.span(), DeclError::TypeAlreadyDeclared(name.source(), previous_span), reporter);
                             }
 
                             path.pop();
@@ -137,7 +137,7 @@ impl<'source> ForwardDeclarer {
 
                             if let Err(previous_id) = storage.insert(&path, name.span(), self.file_id, SimpleTypeInfo::Class { interface: false, }) {
                                 let previous_span = storage.get_span(previous_id);
-                                self.error(name.span(), DeclError::TypeAlreadyDeclared(name.source(), previous_span.map(|(span, _)| span)), reporter);
+                                self.error(name.span(), DeclError::TypeAlreadyDeclared(name.source(), previous_span), reporter);
                             }
 
                             path.pop();
@@ -147,7 +147,7 @@ impl<'source> ForwardDeclarer {
 
                             if let Err(previous_id) = storage.insert(&path, name.span(), self.file_id, SimpleTypeInfo::TypeAlias) {
                                 let previous_span = storage.get_span(previous_id);
-                                self.error(name.span(), DeclError::TypeAlreadyDeclared(name.source(), previous_span.map(|(span, _)| span)), reporter);
+                                self.error(name.span(), DeclError::TypeAlreadyDeclared(name.source(), previous_span), reporter);
                             }
 
                             path.pop();
@@ -217,7 +217,7 @@ impl<'source> ForwardDeclarer {
                             name_span: name.span(),
                             interface: true,
                             parameters: parameter_types,
-                        }), name.span());
+                        }), name.file_id(), name.span());
                         path.pop();
                     },
                     Decl::Class { name, parameters, .. } => {
@@ -251,7 +251,7 @@ impl<'source> ForwardDeclarer {
                             name_span: name.span(),
                             interface: false,
                             parameters: parameter_types,
-                        }), name.span());
+                        }), name.file_id(), name.span());
                         path.pop();
                     },
                     Decl::TypeAlias { name, to, .. } => {
@@ -274,7 +274,7 @@ impl<'source> ForwardDeclarer {
                         storage.insert(&path, ForwardDecl::TypeAlias(ForwardTypeAliasDecl {
                             type_id,
                             reference: to,
-                        }), name.span());
+                        }), name.file_id(), name.span());
                         path.pop();
                     },
                     Decl::Template { kind, parameters, return_type, parameter_span, .. } => {
@@ -332,7 +332,7 @@ impl<'source> ForwardDeclarer {
                                     storage.insert(&path, ForwardDecl::Template(ForwardTemplateDecl {
                                         parameters: parameter_types,
                                         return_type,
-                                    }), name.span());
+                                    }), name.file_id(), name.span());
                                     path.pop();
                                 },
                                 TemplateKind::Conversion { span } => {
@@ -344,7 +344,7 @@ impl<'source> ForwardDeclarer {
                                         storage.insert(&path, ForwardDecl::Conversion(ForwardConversionDecl {
                                             from: parameter_types[0],
                                             to: return_type,
-                                        }), *span);
+                                        }), self.file_id, *span);
                                     }
 
                                     path.pop();
@@ -355,7 +355,7 @@ impl<'source> ForwardDeclarer {
                                         on: optimize_on.expect("No type ID for optimization template target despite previous check"),
                                         parameters: parameter_types,
                                         return_type,
-                                    }), on.span());
+                                    }), self.file_id, on.span());
                                     path.pop();
                                 },
                             }
@@ -370,7 +370,7 @@ impl<'source> ForwardDeclarer {
                         path.push(name.source());
                         storage.insert(&path, ForwardDecl::Variable(ForwardVariableDecl {
                             kind: *kind,
-                        }), name.span());
+                        }), name.file_id(), name.span());
                         path.pop();
                     },
                     // These don't need forward declarations

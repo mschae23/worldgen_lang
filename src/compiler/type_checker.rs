@@ -45,7 +45,7 @@ impl<'source> Diagnostic<MessageMarker> for TypeError<'source> {
         }
     }
 
-    fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(Span, Option<String>)> {
+    fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(FileId, Span, Option<String>)> {
         match self {
             _ => Vec::new(),
         }

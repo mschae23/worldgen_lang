@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use non_empty_vec::ne_vec;
 use crate::compiler::ast::simple::{Decl, VariableKind};
+use crate::compiler::error::FileId;
 use crate::compiler::error::span::Span;
 use crate::compiler::name::{TypeId, TypeStorage};
 
@@ -9,7 +10,7 @@ pub type DeclId = usize;
 #[derive(Debug)]
 pub struct ForwardDeclStorage {
     declarations: Vec<ForwardDecl>,
-    declaration_spans: Vec<Span>,
+    declaration_spans: Vec<(FileId, Span)>,
     top_level_module: ForwardModule,
 }
 
@@ -30,7 +31,7 @@ impl ForwardDeclStorage {
         &self.declarations[id]
     }
 
-    pub fn get_span_by_id(&self, id: DeclId) -> Span {
+    pub fn get_span_by_id(&self, id: DeclId) -> (FileId, Span) {
         self.declaration_spans[id]
     }
 
@@ -58,12 +59,12 @@ impl ForwardDeclStorage {
         Ok(module)
     }
 
-    pub fn insert(&mut self, path: &[&str], decl: ForwardDecl, span: Span) {
+    pub fn insert(&mut self, path: &[&str], decl: ForwardDecl, file_id: FileId, span: Span) {
         assert!(path.len() >= 1, "Cannot insert forward declaration without a name");
 
         let id: DeclId = self.declarations.len();
         self.declarations.push(decl);
-        self.declaration_spans.push(span);
+        self.declaration_spans.push((file_id, span));
 
         let name = *path.last().expect("Path has no last element despite previous check");
         let module = self.find_module_mut(path.iter().take(path.len().saturating_sub(1)).copied());

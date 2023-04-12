@@ -23,8 +23,8 @@ impl OwnedToken {
         }
     }
 
-    pub fn from_token(token: &Token<'_>, file_id: FileId) -> Self {
-        Self::new(token.source().to_owned(), token.token_type(), file_id, Span::from(token))
+    pub fn from_token(token: &Token<'_>) -> Self {
+        Self::new(token.source().to_owned(), token.token_type(), token.file_id(), token.span())
     }
 }
 

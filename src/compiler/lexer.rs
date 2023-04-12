@@ -1,32 +1,8 @@
 use std::fmt::{Debug, Display, Formatter};
 use std::str::Chars;
-use crate::compiler::error::{ErrorReporter, Diagnostic, DiagnosticContext, Severity, NoteKind};
+use crate::compiler::error::{ErrorReporter, Diagnostic, DiagnosticContext, Severity, NoteKind, FileId};
 use crate::compiler::error::span::Span;
 use crate::util;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TokenPos {
-    pub line: i32,
-    // TODO Remove; line and column number information is no longer needed with the diagnostic renderer
-    pub column: i32,
-    pub index: u32,
-}
-
-impl TokenPos {
-    pub fn new(line: i32, column: i32, index: u32) -> TokenPos {
-        TokenPos { line, column, index }
-    }
-
-    pub fn begin() -> TokenPos {
-        TokenPos::new(1, 1, 0)
-    }
-}
-
-impl Display for TokenPos {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.line, self.column)
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -78,31 +54,25 @@ pub enum TokenType {
 pub struct Token<'source> {
     pub token_type: TokenType,
     pub source: &'source str,
-    pub start: TokenPos, pub end: TokenPos,
+    pub span: Span, file_id: FileId,
 }
 
 impl<'source> Token<'source> {
-    pub fn new(token_type: TokenType, source: &'source str, start: TokenPos, end: TokenPos) -> Self {
+    pub fn new(token_type: TokenType, source: &'source str, span: Span, file_id: FileId) -> Self {
         Token {
             token_type, source,
-            start, end
+            span, file_id,
         }
     }
 
-    pub fn empty() -> Token<'source> {
-        Token {
-            token_type: TokenType::None,
-            source: "",
-            start: TokenPos::begin(), end: TokenPos::begin(),
-        }
+    pub fn empty() -> Self {
+        Self::new(TokenType::Error, "", Span::new(0, 0), 0)
     }
 
     pub fn token_type(&self) -> TokenType { self.token_type }
     pub fn source(&self) -> &'source str { &self.source }
-    pub fn start(&self) -> &TokenPos { &self.start }
-    pub fn end(&self) -> &TokenPos { &self.end }
-
-    pub fn span(&self) -> Span { Span::from(self) }
+    pub fn span(&self) -> Span { self.span }
+    pub fn file_id(&self) -> FileId { self.file_id }
 }
 
 impl<'source> Display for Token<'source> {
@@ -134,8 +104,6 @@ pub enum LexerError {
         got: char
     },
     UnterminatedString,
-
-    OtherError(String),
 }
 
 impl LexerError {
@@ -156,7 +124,6 @@ impl Diagnostic<MessageMarker> for LexerError {
             Self::UnexpectedCharacter(_) => "lexer/unexpected_character",
             Self::ExpectedCharacter { .. } => "lexer/expected_character",
             Self::UnterminatedString => "lexer/unterminated_string",
-            Self::OtherError(_) => "lexer/unknown",
         }
     }
 
@@ -170,7 +137,6 @@ impl Diagnostic<MessageMarker> for LexerError {
             Self::UnexpectedCharacter(c) => format!("unexpected character '{}'", c),
             Self::ExpectedCharacter { expected, got } => format!("expected character '{}', got '{}'", expected, got),
             Self::UnterminatedString => String::from("unterminated string"),
-            Self::OtherError(msg) => msg.clone(),
         }
     }
 
@@ -178,7 +144,7 @@ impl Diagnostic<MessageMarker> for LexerError {
         None
     }
 
-    fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(Span, Option<String>)> {
+    fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(FileId, Span, Option<String>)> {
         Vec::new()
     }
 
@@ -192,17 +158,6 @@ impl Diagnostic<MessageMarker> for LexerError {
 }
 
 pub type LexerErrorReporter = ErrorReporter<MessageMarker, LexerError>;
-
-pub struct Lexer<'source> {
-    input: &'source str,
-
-    chars: Chars<'source>,
-    peek_1: Option<char>,
-    peek_2: Option<char>,
-
-    start_pos: TokenPos,
-    current_pos: TokenPos,
-}
 
 macro_rules! try_or_report {
     ($self:expr, $reporter:expr, $block:expr) => {
@@ -220,24 +175,35 @@ macro_rules! try_or_report {
     }
 }
 
+pub struct Lexer<'source> {
+    input: &'source str, file_id: FileId,
+
+    chars: Chars<'source>,
+    peek_1: Option<char>,
+    peek_2: Option<char>,
+
+    start_index: u32,
+    current_index: u32,
+}
+
 impl<'source> Lexer<'source> {
-    pub fn new(source: &'source str) -> Lexer<'source> {
+    pub fn new(source: &'source str, file_id: FileId) -> Lexer<'source> {
         Lexer {
-            input: source,
+            input: source, file_id,
 
             chars: source.chars(),
             peek_1: None,
             peek_2: None,
 
-            start_pos: TokenPos::begin(),
-            current_pos: TokenPos::begin(),
+            start_index: 0,
+            current_index: 0,
         }
     }
 
     pub fn scan_token(&mut self, reporter: &mut LexerErrorReporter) -> Token<'source> {
         loop {
             self.skip_whitespace();
-            self.start_pos = self.current_pos.clone();
+            self.start_index = self.current_index.clone();
 
             if self.is_eof() {
                 return self.make_token(TokenType::Eof);
@@ -330,7 +296,7 @@ impl<'source> Lexer<'source> {
         }
 
         if self.is_eof() {
-            reporter.report(Span::from_pos(&self.start_pos, &self.current_pos), LexerError::UnterminatedString, false);
+            reporter.report(Span::new(self.start_index, self.current_index), LexerError::UnterminatedString, false);
             self.make_token(TokenType::Error)
         } else {
             let _ = self.consume(); // the trailing '"'
@@ -338,8 +304,8 @@ impl<'source> Lexer<'source> {
             // Don't add leading and trailing '"' characters to token
             Token {
                 token_type: TokenType::LiteralString,
-                source: &self.input[(self.start_pos.index as usize + 1)..(self.current_pos.index as usize - 1)],
-                start: self.start_pos.clone(), end: self.current_pos.clone(),
+                source: &self.input[(self.start_index as usize + 1)..(self.current_index as usize - 1)],
+                span: Span::new(self.start_index, self.current_index), file_id: self.file_id,
             }
         }
     }
@@ -384,7 +350,7 @@ impl<'source> Lexer<'source> {
             let _ = self.consume();
         }
 
-        let name: &str = &self.input[self.start_pos.index as usize..self.current_pos.index as usize];
+        let name: &str = &self.input[self.start_index as usize..self.current_index as usize];
         let mut chars = name.chars();
 
         let token_type = match chars.next().expect("Internal compiler error: Empty identifier") {
@@ -459,7 +425,7 @@ impl<'source> Lexer<'source> {
             _ => TokenType::Identifier,
         };
 
-        Token { source: name, token_type, start: self.start_pos.clone(), end: self.current_pos.clone() }
+        Token { source: name, token_type, span: Span::new(self.start_index, self.current_index), file_id: self.file_id, }
     }
 
     fn check_keyword(name: &str, start: usize, keyword: &'static str, token_type: TokenType) -> TokenType {
@@ -473,9 +439,10 @@ impl<'source> Lexer<'source> {
     fn make_token(&self, token_type: TokenType) -> Token<'source> {
         Token {
             token_type,
-            source: &self.input[self.start_pos.index as usize..self.current_pos.index as usize],
+            source: &self.input[self.start_index as usize..self.current_index as usize],
 
-            start: self.start_pos.clone(), end: self.current_pos.clone(),
+            span: Span::new(self.start_index, self.current_index),
+            file_id: self.file_id,
         }
     }
 
@@ -486,15 +453,7 @@ impl<'source> Lexer<'source> {
         } else {
             self.chars.next().ok_or(LexerError::UnexpectedEof)
         }).map(|c| {
-            self.current_pos.index += c.len_utf8() as u32;
-
-            if c == '\n' {
-                self.current_pos.line += 1;
-                self.current_pos.column = 1;
-            } else {
-                self.current_pos.column += 1;
-            }
-
+            self.current_index += c.len_utf8() as u32;
             c
         })
     }
@@ -603,12 +562,11 @@ impl<'source> Lexer<'source> {
     }
 
     fn is_eof(&self) -> bool {
-        self.current_pos.index as usize >= self.input.len()
+        self.current_index as usize >= self.input.len()
     }
 
     fn report_char(&self, reporter: &mut LexerErrorReporter, error: LexerError, byte_offset: u32) {
-        reporter.report(Span::from_pos(&self.start_pos,
-            &TokenPos::new(self.current_pos.line, self.current_pos.column + if byte_offset > 0 { 1 } else { 0 }, self.current_pos.index + byte_offset)),
+        reporter.report(Span::new(self.start_index, self.current_index + byte_offset),
             error, false);
     }
 }
