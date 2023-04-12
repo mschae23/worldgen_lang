@@ -4,6 +4,7 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use non_empty_vec::{ne_vec, NonEmpty};
 use crate::compiler::ast::simple::{PrimitiveTypeKind, TypePart, TypeReferencePart};
+use crate::compiler::ast::typed::TypedDecl;
 use crate::compiler::error::FileId;
 use crate::compiler::error::span::Span;
 
@@ -233,12 +234,14 @@ pub const GLOBAL_IMPORT_ENVIRONMENT_ID: EnvironmentId = 1;
 #[derive(Debug)]
 pub struct TypeEnvironment {
     pub sub_environments: HashMap<String, EnvironmentId>,
+    pub declarations: HashMap<String, TypedDecl>,
 }
 
 impl TypeEnvironment {
     pub fn new() -> Self {
         TypeEnvironment {
             sub_environments: HashMap::new(),
+            declarations: HashMap::new(),
         }
     }
 }
@@ -321,6 +324,10 @@ impl NameResolution {
         self.get_current_type_environment_mut().sub_environments.insert(name, id);
         self.type_environment_stack.push(id);
         id
+    }
+
+    pub fn insert_declaration(&mut self, name: String, decl: TypedDecl) {
+        self.get_current_type_environment_mut().declarations.insert(name, decl);
     }
 
     pub fn close_type_environment(&mut self) {

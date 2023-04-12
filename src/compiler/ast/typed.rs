@@ -1,55 +1,90 @@
 use std::fmt::Debug;
 use non_empty_vec::NonEmpty;
-use crate::compiler::ast::simple::{ClassImplementsPart, ClassReprPart, ParameterPart, TemplateKind, TypePart, VariableKind};
+use crate::compiler::ast::forward::DeclId;
+use crate::compiler::ast::simple::VariableKind;
+use crate::compiler::error::FileId;
 use crate::compiler::error::span::Span;
-use crate::compiler::lexer::Token;
+use crate::compiler::lexer::{Token, TokenType};
+use crate::compiler::name::TypeId;
 
 // TODO This isn't actually typed yet
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnedToken {
+    pub source: String,
+    pub token_type: TokenType,
+    pub file_id: FileId, pub span: Span,
+}
+
+impl OwnedToken {
+    pub fn new(source: String, token_type: TokenType, file_id: FileId, span: Span) -> Self {
+        OwnedToken {
+            source, token_type, file_id, span,
+        }
+    }
+
+    pub fn from_token(token: &Token<'_>, file_id: FileId) -> Self {
+        Self::new(token.source().to_owned(), token.token_type(), file_id, Span::from(token))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypedParameterPart {
+    pub name: OwnedToken,
+    pub parameter_type: TypeId,
+}
+
 #[derive(Clone, Debug, PartialEq)]
-pub enum TypedDecl<'source> {
-    Module {
-        name: Token<'source>,
-        declarations: Vec<TypedDecl<'source>>,
-    },
+pub struct TypedSingleImplementsPart {
+    pub reference: TypeId,
+    pub parameters: Vec<TypedExpr>,
+    pub span: Span, pub parameter_span: Span, pub file_id: FileId,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypedClassImplementsPart {
+    pub parts: NonEmpty<TypedSingleImplementsPart>,
+    pub span: Span, pub file_id: FileId,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypedDefinedClassReprPart {
+    pub expr: TypedExpr,
+    pub span: Span, pub file_id: FileId,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TypedClassReprPart {
+    Defined(TypedDefinedClassReprPart),
+    Inherited(DeclId),
+    None,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TypedDecl {
     Interface {
-        name: Token<'source>,
-        parameters: Vec<ParameterPart<'source>>,
-        implements: Option<ClassImplementsPart<'source>>,
-        class_repr: Option<ClassReprPart<'source>>,
+        name: OwnedToken,
+        parameters: Vec<TypedParameterPart>,
+        implements: Option<TypedClassImplementsPart>,
+        class_repr: Option<TypedClassReprPart>,
         parameter_span: Span,
     },
     Class {
-        name: Token<'source>,
-        parameters: Vec<ParameterPart<'source>>,
-        implements: ClassImplementsPart<'source>,
-        class_repr: Option<ClassReprPart<'source>>,
+        name: OwnedToken,
+        parameters: Vec<TypedParameterPart>,
+        implements: TypedClassImplementsPart,
+        class_repr: Option<TypedClassReprPart>,
         parameter_span: Span,
     },
     TypeAlias {
-        name: Token<'source>,
-        to: TypePart<'source>,
-        condition: Option<TypedExpr<'source>>,
-    },
-    Template {
-        kind: TemplateKind<'source>,
-        parameters: Vec<ParameterPart<'source>>,
-        return_type: TypePart<'source>,
-        expr: TypedTemplateExpr<'source>,
-        parameter_span: Span,
-    },
-    Include {
-        path: Token<'source>,
-    },
-    Import {
-        path: NonEmpty<Token<'source>>,
-        selector: Option<NonEmpty<Token<'source>>>, // None represents star import (import something::*)
-        span: Span, // only path and selector, doesn't include the "import" keyword or semicolon
+        name: OwnedToken,
+        to: TypeId,
+        condition: Option<TypedExpr>,
     },
     Variable {
         kind: VariableKind,
-        name: Token<'source>,
-        expr: TypedExpr<'source>,
+        name: OwnedToken,
+        expr: TypedExpr,
         span: Span,
     },
 
@@ -57,76 +92,102 @@ pub enum TypedDecl<'source> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum TypedTemplateExpr<'source> {
-    Block {
-        expressions: NonEmpty<TypedTemplateExpr<'source>>,
-        span: Span,
-    },
-    If {
-        condition: TypedExpr<'source>,
-        then: Box<TypedTemplateExpr<'source>>,
-        otherwise: Box<TypedTemplateExpr<'source>>,
-        condition_span: Span,
-    },
-    Simple(TypedExpr<'source>),
+pub struct TypedTemplateDecl {
+    pub name: OwnedToken,
+    pub parameters: Vec<TypedParameterPart>,
+    pub return_type: TypeId,
+    pub expr: TypedTemplateExpr,
+    pub parameter_span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum TypedExpr<'source> {
-    ConstantFloat(f64, Span),
-    ConstantInt(i32, Span),
-    ConstantBoolean(bool, Span),
-    ConstantString(String, Span),
-    Identifier(Token<'source>),
+pub struct TypedConversionDecl {
+    pub from: TypedParameterPart,
+    pub to: TypeId,
+    pub expr: TypedTemplateExpr,
+    pub parameter_span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypedOptimizeDecl {
+    pub on: TypeId,
+    pub parameters: Vec<TypedParameterPart>,
+    pub return_type: TypeId,
+    pub expr: TypedTemplateExpr,
+    pub parameter_span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TypedTemplateExpr {
+    Block {
+        expressions: NonEmpty<TypedTemplateExpr>,
+        span: Span,
+    },
+    If {
+        condition: TypedExpr,
+        then: Box<TypedTemplateExpr>,
+        otherwise: Box<TypedTemplateExpr>,
+        condition_span: Span,
+    },
+    Simple(TypedExpr),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TypedExpr {
+    ConstantFloat(f64, FileId, Span),
+    ConstantInt(i32, FileId, Span),
+    ConstantBoolean(bool, FileId, Span),
+    ConstantString(String, FileId, Span),
+    Identifier(OwnedToken),
 
     Replacement(Span), // `_` token as expression, for type alias conditions
 
     UnaryOperator {
-        operator: Token<'source>,
-        expr: Box<TypedExpr<'source>>,
+        operator: OwnedToken,
+        expr: Box<TypedExpr>,
     },
     BinaryOperator {
-        left: Box<TypedExpr<'source>>,
-        operator: Token<'source>,
-        right: Box<TypedExpr<'source>>,
+        left: Box<TypedExpr>,
+        operator: OwnedToken,
+        right: Box<TypedExpr>,
     },
     FunctionCall {
-        callee: Box<TypedExpr<'source>>,
-        args: Vec<TypedExpr<'source>>,
+        callee: Box<TypedExpr>,
+        args: Vec<TypedExpr>,
         args_span: Span,
     },
     Member { // something::member
-        receiver: Box<TypedExpr<'source>>,
-        name: Token<'source>,
+        receiver: Box<TypedExpr>,
+        name: OwnedToken,
     },
     Receiver { // something.receiver_template
-        receiver: Box<TypedExpr<'source>>,
-        name: Token<'source>,
+        receiver: Box<TypedExpr>,
+        name: OwnedToken,
     },
     Index {
-        receiver: Box<TypedExpr<'source>>,
-        index: Box<TypedExpr<'source>>,
+        receiver: Box<TypedExpr>,
+        index: Box<TypedExpr>,
         operator_span: Span,
     },
     BuiltinFunctionCall {
-        name: Token<'source>,
-        args: Vec<TypedExpr<'source>>,
+        name: OwnedToken,
+        args: Vec<TypedExpr>,
         args_span: Span,
     },
-    BuiltinType(TypePart<'source>),
+    BuiltinType(TypeId),
     TypeCast {
-        expr: Box<TypedExpr<'source>>,
+        expr: Box<TypedExpr>,
         operator_span: Span,
-        to: TypePart<'source>,
+        to: TypeId,
     },
 
     Object {
-        fields: Vec<(Token<'source>, TypedExpr<'source>)>,
-        merge_expr: Option<Box<TypedExpr<'source>>>,
+        fields: Vec<(OwnedToken, TypedExpr)>,
+        merge_expr: Option<Box<TypedExpr>>,
         span: Span,
     },
     Array {
-        elements: Vec<TypedExpr<'source>>,
+        elements: Vec<TypedExpr>,
         span: Span,
     },
 
