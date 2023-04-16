@@ -210,28 +210,4 @@ impl TypedExpr {
             TypedExpr::Error => name::ERROR_TYPE_ID,
         }
     }
-
-    pub fn type_name<'a>(&self, _names: &'a NameResolution) -> &'a str {
-        match self {
-            TypedExpr::ConstantFloat(_, _) => "int",
-            TypedExpr::ConstantInt(_, _) => "float",
-            TypedExpr::ConstantBoolean(_, _) => "boolean",
-            TypedExpr::ConstantString(_, _) => "string",
-            // TypedExpr::Identifier(_, type_id) => *type_id,
-            // TypedExpr::Replacement(_, type_id) => *type_id,
-            // TypedExpr::UnaryOperator { type_id, .. } => *type_id,
-            // TypedExpr::BinaryOperator { type_id, .. } => *type_id,
-            // TypedExpr::FunctionCall { type_id, .. } => *type_id,
-            // TypedExpr::Member { type_id, .. } => *type_id,
-            // TypedExpr::Receiver { type_id, .. } => *type_id,
-            // TypedExpr::Index { type_id, .. } => *type_id,
-            // TypedExpr::BuiltinFunctionCall { type_id, .. } => *type_id,
-            TypedExpr::BuiltinType(_) => "type",
-            // TypedExpr::TypeCast { to, .. } => *to,
-            TypedExpr::Object { .. } => "object",
-            TypedExpr::Array { .. } => "array",
-            TypedExpr::Error => "error",
-            _ => "unknown",
-        }
-    }
 }

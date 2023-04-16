@@ -343,6 +343,20 @@ impl NameResolution {
 
         self.type_environment_stack.pop();
     }
+
+    pub fn type_name(&self, type_id: TypeId) -> &str {
+        match type_id {
+            INT_TYPE_ID => "int",
+            FLOAT_TYPE_ID => "float",
+            BOOLEAN_TYPE_ID => "boolean",
+            STRING_TYPE_ID => "string",
+            OBJECT_TYPE_ID => "object",
+            ARRAY_TYPE_ID => "array",
+            TYPE_TYPE_ID => "type",
+            ERROR_TYPE_ID => "error",
+            _ => "unknown",
+        }
+    }
 }
 
 impl Default for NameResolution {

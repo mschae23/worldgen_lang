@@ -188,7 +188,7 @@ impl<'source> TypeChecker {
                             _ => {
                                 self.error(part.span, TypeError::ImplementsNotClass { name: part.name.0.last().source(),
                                     actual_kind: referenced_decl.kind_with_indefinite_article(),
-                                    defined_at: referenced_decl.key_span(),
+                                    defined_at: referenced_decl.span(),
                                 }, reporter);
                                 None
                             }
@@ -333,10 +333,11 @@ impl<'source> TypeChecker {
                     (Box::new(self.check_expr(*merge_expr, TypeHint::new(name::OBJECT_TYPE_ID), reporter)), SpanWithFile::new(self.file_id, span)));
 
                 if let Some((typed_merge_expr, merge_expr_span)) = &typed_merge_expr {
-                    if typed_merge_expr.type_id() != name::OBJECT_TYPE_ID {
+                    // TODO insert "convert type" AST node
+                    if !TypeHint::new(name::OBJECT_TYPE_ID).can_convert_from(&TypeHint::new(typed_merge_expr.type_id()), true, &self.names) {
                         self.error(merge_expr_span.span(), TypeError::MismatchedTypes {
                             expected: Cow::Borrowed("object"),
-                            found: Cow::Owned(typed_merge_expr.type_name(&self.names).to_owned()),
+                            found: Cow::Owned(self.names.type_name(typed_merge_expr.type_id()).to_owned()),
                             message: Some(Cow::Borrowed("merge expression needs to be of type object")),
                             additional_annotation: Some((SpanWithFile::new(self.file_id, span), None)),
                         }, reporter);

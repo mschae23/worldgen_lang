@@ -222,7 +222,7 @@ impl<'source> ForwardDeclarer {
                         storage.insert_with_type(&path, type_id, ForwardDecl::Class(ForwardClassDecl {
                             key_span: *key_span,
                             type_id,
-                            name_span: name.span(),
+                            name_span: SpanWithFile::new(self.file_id, name.span()),
                             interface: *interface,
                             parameters: parameter_types,
                             implements: implements_id,
@@ -257,6 +257,7 @@ impl<'source> ForwardDeclarer {
                         storage.insert_with_type(&path, type_id, ForwardDecl::TypeAlias(ForwardTypeAliasDecl {
                             key_span: *key_span,
                             type_id,
+                            name_span: SpanWithFile::new(self.file_id, name.span()),
                             reference: to,
                         }), name.file_id(), name.span());
                         path.pop();
@@ -316,6 +317,7 @@ impl<'source> ForwardDeclarer {
                                     path.push(name.source());
                                     storage.insert(&path, ForwardDecl::Template(ForwardTemplateDecl {
                                         key_span: *key_span,
+                                        name_span: SpanWithFile::new(self.file_id, name.span()),
                                         parameters: parameter_types,
                                         return_type,
                                     }), name.file_id(), name.span());
@@ -359,6 +361,7 @@ impl<'source> ForwardDeclarer {
                         path.push(name.source());
                         storage.insert(&path, ForwardDecl::Variable(ForwardVariableDecl {
                             key_span: *key_span,
+                            name_span: SpanWithFile::new(self.file_id, name.span()),
                             kind: *kind,
                         }), name.file_id(), name.span());
                         path.pop();

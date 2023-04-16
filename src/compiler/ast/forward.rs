@@ -232,7 +232,7 @@ impl<'source> ForwardDeclareResult<'source> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardClassDecl {
     pub key_span: SpanWithFile,
-    pub type_id: TypeId, pub name_span: Span,
+    pub type_id: TypeId, pub name_span: SpanWithFile,
     pub interface: bool,
     pub parameters: Vec<TypeId>,
     pub implements: Option<TypeId>,
@@ -242,13 +242,13 @@ pub struct ForwardClassDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardTypeAliasDecl {
     pub key_span: SpanWithFile,
-    pub type_id: TypeId,
+    pub type_id: TypeId, pub name_span: SpanWithFile,
     pub reference: TypeId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardTemplateDecl {
-    pub key_span: SpanWithFile,
+    pub key_span: SpanWithFile, pub name_span: SpanWithFile,
     pub parameters: Vec<TypeId>,
     pub return_type: TypeId,
 }
@@ -270,7 +270,7 @@ pub struct ForwardOptimizeDecl {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardVariableDecl {
-    pub key_span: SpanWithFile,
+    pub key_span: SpanWithFile, pub name_span: SpanWithFile,
     // Can't put expr type here, because of type inference,
     // which happens later
     pub kind: VariableKind,
@@ -290,7 +290,7 @@ impl ForwardDecl {
     pub fn kind(&self) -> &'static str {
         match self {
             ForwardDecl::Class(_) => "class",
-            ForwardDecl::TypeAlias(_) => "interface",
+            ForwardDecl::TypeAlias(_) => "type alias",
             ForwardDecl::Template(_) => "template",
             ForwardDecl::Conversion(_) => "type conversion",
             ForwardDecl::Optimize(_) => "optimization",
@@ -301,7 +301,7 @@ impl ForwardDecl {
     pub fn kind_with_indefinite_article(&self) -> &'static str {
         match self {
             ForwardDecl::Class(_) => "a class",
-            ForwardDecl::TypeAlias(_) => "an interface",
+            ForwardDecl::TypeAlias(_) => "a type alias",
             ForwardDecl::Template(_) => "a template",
             ForwardDecl::Conversion(_) => "a type conversion",
             ForwardDecl::Optimize(_) => "an optimization",
@@ -317,6 +317,17 @@ impl ForwardDecl {
             ForwardDecl::Conversion(decl) => decl.key_span,
             ForwardDecl::Optimize(decl) => decl.key_span,
             ForwardDecl::Variable(decl) => decl.key_span,
+        }
+    }
+
+    pub fn span(&self) -> SpanWithFile {
+        match self {
+            ForwardDecl::Class(decl) => decl.name_span,
+            ForwardDecl::TypeAlias(decl) => decl.name_span,
+            ForwardDecl::Template(decl) => decl.name_span,
+            ForwardDecl::Conversion(decl) => decl.key_span,
+            ForwardDecl::Optimize(decl) => decl.key_span,
+            ForwardDecl::Variable(decl) => decl.name_span,
         }
     }
 }
