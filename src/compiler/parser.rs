@@ -1,7 +1,7 @@
 use std::fmt::{Display, Formatter};
 use lazy_static::lazy_static;
 use non_empty_vec::ne_vec;
-use crate::compiler::ast::simple::{ClassImplementsPart, ClassReprPart, Decl, Expr, ParameterPart, PrimitiveTypeKind, SingleImplementsPart, TemplateDeclKind, TemplateExpr, TemplateKind, TypePart, TypeReferencePart, VariableKind};
+use crate::compiler::ast::simple::{ClassImplementsPart, ClassReprPart, Decl, Expr, ParameterPart, PrimitiveTypeKind, TemplateDeclKind, TemplateExpr, TemplateKind, TypePart, TypeReferencePart, VariableKind};
 use crate::compiler::error::{ErrorReporter, Diagnostic, DiagnosticContext, Severity, NoteKind, FileId};
 use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::compiler::lexer::{Lexer, LexerErrorReporter, Token, TokenType};
@@ -283,7 +283,7 @@ impl<'source> Parser<'source> {
         };
 
         let implements = if self.matches(TokenType::Colon, lexer_reporter) {
-            Some(self.parse_class_implements_part(reporter, lexer_reporter))
+            Some(self.parse_class_implements_part("`:`", reporter, lexer_reporter))
         } else { None };
 
         let repr = if self.matches(TokenType::Assign, lexer_reporter) {
@@ -337,7 +337,7 @@ impl<'source> Parser<'source> {
         };
 
         self.expect_after(TokenType::Colon, "`:`", "`)`", Some(class_span), reporter, lexer_reporter);
-        let implements = self.parse_class_implements_part(reporter, lexer_reporter);
+        let implements = self.parse_class_implements_part("`:`", reporter, lexer_reporter);
 
         let repr = if self.matches(TokenType::Assign, lexer_reporter) {
             let repr_start = self.current.span.start;
@@ -610,7 +610,7 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn parse_single_implements_part(&mut self, previous: &'static str, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> SingleImplementsPart<'source> {
+    fn parse_class_implements_part(&mut self, previous: &'static str, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> ClassImplementsPart<'source> {
         // Expects the first token `:` or `,` to be consumed already
 
         let start_pos = self.current.span.start;
@@ -639,27 +639,11 @@ impl<'source> Parser<'source> {
         };
 
         let end_pos = self.previous.span.end;
-        SingleImplementsPart {
+        ClassImplementsPart {
             name,
             parameters: args,
             span: Span::new(start_pos, end_pos),
             parameter_span: args_span,
-        }
-    }
-
-    fn parse_class_implements_part(&mut self, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) -> ClassImplementsPart<'source> {
-        // Expects the first token `:` to be consumed already
-
-        let start_pos = self.current.span.start;
-        let mut parts = ne_vec![self.parse_single_implements_part("`:`", reporter, lexer_reporter)];
-
-        while self.matches(TokenType::Comma, lexer_reporter) {
-            parts.push(self.parse_single_implements_part("`,`", reporter, lexer_reporter));
-        }
-
-        ClassImplementsPart {
-            parts,
-            span: Span::new(start_pos, self.previous.span.end),
         }
     }
 

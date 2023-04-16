@@ -80,6 +80,11 @@ impl TypeStorage {
         self.types.get(type_id)
     }
 
+    #[inline]
+    pub fn get_type_count(&self) -> usize {
+        self.types.len()
+    }
+
     pub fn get_path(&self, type_id: TypeId) -> Option<&Path> {
         if type_id < PRIMITIVE_TYPE_COUNT {
             None
@@ -90,7 +95,7 @@ impl TypeStorage {
     }
 
     pub fn get_type_id_by_path(&self, path: &[&str]) -> Option<TypeId> {
-        assert!(path.len() >= 1, "Cannot get type ID for empty path");
+        assert!(!path.is_empty(), "Cannot get type ID for empty path");
 
         let mut module = &self.top_level_module;
 
@@ -177,7 +182,7 @@ impl TypeStorage {
     }
 
     pub fn insert(&mut self, path: &[&str], span: Span, file_id: FileId, type_info: SimpleTypeInfo) -> Result<TypeId, TypeId> {
-        assert!(path.len() >= 1, "Cannot insert a type with an empty path");
+        assert!(!path.is_empty(), "Cannot insert a type with an empty path");
 
         let id: TypeId = self.types.len();
 

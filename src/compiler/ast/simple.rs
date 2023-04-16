@@ -65,16 +65,10 @@ pub struct ParameterPart<'source> {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct SingleImplementsPart<'source> {
+pub struct ClassImplementsPart<'source> {
     pub name: TypeReferencePart<'source>,
     pub parameters: Vec<Expr<'source>>,
     pub span: Span, pub parameter_span: Span,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ClassImplementsPart<'source> {
-    pub parts: NonEmpty<SingleImplementsPart<'source>>,
-    pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq)]

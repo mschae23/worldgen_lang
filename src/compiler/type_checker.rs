@@ -11,6 +11,8 @@ use crate::Config;
 #[allow(unused)]
 use crate::println_debug;
 
+pub mod hint;
+
 pub type MessageMarker = ();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,6 +47,7 @@ impl<'source> Diagnostic<MessageMarker> for TypeError<'source> {
     }
 
     fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(FileId, Span, Option<String>)> {
+        #[allow(clippy::match_single_binding)]
         match self {
             _ => Vec::new(),
         }
@@ -75,6 +78,7 @@ pub struct TypeChecker {
     names: NameResolution,
 }
 
+#[allow(clippy::too_many_arguments)]
 impl<'source> TypeChecker {
     pub fn new(config: Rc<Config>, path: Rc<PathBuf>, file_id: FileId, type_storage: TypeStorage, forward_decls: ForwardDeclStorage) -> Self {
         TypeChecker {
@@ -85,7 +89,7 @@ impl<'source> TypeChecker {
     }
 
     pub fn check_types(mut self, declarations: Vec<Decl<'source>>, reporter: &mut TypeErrorReporter<'source>) {
-        // println_debug!("Name resolution state:\n{:#?}\n{:#?}", &self.types, &self.forward_decls);
+        println_debug!("Name resolution state:\n{:#?}\n{:#?}", &self.types, &self.forward_decls);
 
         let mut process_stack = declarations.into_iter()
             .map(ProcessVariant::Decl).rev().collect::<Vec<_>>();
@@ -141,8 +145,8 @@ impl<'source> TypeChecker {
             ForwardDecl::Class(decl) => {
                 // TODO
             },
-            _ => {
-                println_debug!("Internal compiler error: forward decl for `{}` interface is not a class", name.source());
+            _ => if !self.forward_decls.has_duplicate(forward_decl_id) {
+                panic!("Internal compiler error: forward decl for `{}` interface is not a class", name.source());
             },
         }
     }

@@ -3,7 +3,7 @@ use non_empty_vec::ne_vec;
 use crate::compiler::ast::simple::{Decl, VariableKind};
 use crate::compiler::error::FileId;
 use crate::compiler::error::span::Span;
-use crate::compiler::name::{TypeId, TypeStorage};
+use crate::compiler::name::{PRIMITIVE_TYPE_COUNT, TypeId, TypeStorage};
 
 pub type DeclId = usize;
 
@@ -11,15 +11,23 @@ pub type DeclId = usize;
 pub struct ForwardDeclStorage {
     declarations: Vec<ForwardDecl>,
     declaration_spans: Vec<(FileId, Span)>,
+    declaration_has_duplicate: Vec<bool>,
     top_level_module: ForwardModule,
+
+    type_to_decl_mapping: Vec<TypeToDeclMapping>,
 }
 
 impl ForwardDeclStorage {
-    pub fn new() -> Self {
+    pub fn new(type_count: usize) -> Self {
+        let mut type_to_decl_mapping = vec![TypeToDeclMapping::Unknown; type_count];
+        type_to_decl_mapping[0..PRIMITIVE_TYPE_COUNT].fill(TypeToDeclMapping::Primitive);
+
         ForwardDeclStorage {
             declarations: Vec::new(),
             declaration_spans: Vec::new(),
+            declaration_has_duplicate: Vec::new(),
             top_level_module: ForwardModule::new(),
+            type_to_decl_mapping,
         }
     }
 
@@ -33,6 +41,22 @@ impl ForwardDeclStorage {
 
     pub fn get_span_by_id(&self, id: DeclId) -> (FileId, Span) {
         self.declaration_spans[id]
+    }
+
+    pub fn get_decl_id_from_type_id(&self, id: TypeId) -> Option<DeclId> {
+        if let TypeToDeclMapping::Forward(decl_id) = self.type_to_decl_mapping[id] {
+            Some(decl_id)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_decl_by_type_id(&self, id: TypeId) -> Option<&ForwardDecl> {
+        self.get_decl_id_from_type_id(id).map(|id| self.get_decl_by_id(id))
+    }
+
+    pub fn has_duplicate(&self, id: DeclId) -> bool {
+        self.declaration_has_duplicate[id]
     }
 
     pub fn top_level_module(&self) -> &ForwardModule {
@@ -59,17 +83,33 @@ impl ForwardDeclStorage {
         Ok(module)
     }
 
-    pub fn insert(&mut self, path: &[&str], decl: ForwardDecl, file_id: FileId, span: Span) {
-        assert!(path.len() >= 1, "Cannot insert forward declaration without a name");
+    pub fn insert(&mut self, path: &[&str], decl: ForwardDecl, file_id: FileId, span: Span) -> DeclId {
+        assert!(!path.is_empty(), "Cannot insert forward declaration without a name");
 
         let id: DeclId = self.declarations.len();
         self.declarations.push(decl);
         self.declaration_spans.push((file_id, span));
+        self.declaration_has_duplicate.push(false);
 
         let name = *path.last().expect("Path has no last element despite previous check");
         let module = self.find_module_mut(path.iter().take(path.len().saturating_sub(1)).copied());
 
         module.declarations.push((name.to_owned(), id));
+        id
+    }
+
+    pub fn insert_with_type(&mut self, path: &[&str], type_id: TypeId, decl: ForwardDecl, file_id: FileId, span: Span) -> DeclId {
+        let decl_id = self.insert(path, decl, file_id, span);
+        self.insert_type_to_decl_mapping(type_id, decl_id);
+        decl_id
+    }
+
+    pub fn mark_duplicate(&mut self, original_id: DeclId) {
+        self.declaration_has_duplicate[original_id] = true;
+    }
+
+    pub fn insert_type_to_decl_mapping(&mut self, type_id: TypeId, decl_id: DeclId) {
+        self.type_to_decl_mapping[type_id] = TypeToDeclMapping::Forward(decl_id);
     }
 
     pub fn find_decl_direct<'a, F: Fn(&str, &ForwardDecl) -> bool>(&self, module_path: &[(&'a str, Span)], predicate: F, name_debug_info: (&'a str, Span)) -> Result<&ForwardDecl, (&'a str, Span)> {
@@ -167,11 +207,11 @@ impl ForwardDeclStorage {
 
         Err(span)
     }
-}
 
-impl Default for ForwardDeclStorage {
-    fn default() -> Self {
-        Self::new()
+    pub fn assert_complete_type_mappings(&self) {
+        if self.type_to_decl_mapping.iter().any(|mapping| matches!(mapping, TypeToDeclMapping::Unknown)) {
+            eprintln!("[debug] incomplete mappings from type ID to forward decl ID");
+        }
     }
 }
 
@@ -194,6 +234,7 @@ pub struct ForwardClassDecl {
     pub type_id: TypeId, pub name_span: Span,
     pub interface: bool,
     pub parameters: Vec<TypeId>,
+    pub implements: Option<TypeId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,4 +298,11 @@ impl Default for ForwardModule {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeToDeclMapping {
+    Unknown,
+    Primitive,
+    Forward(DeclId),
 }

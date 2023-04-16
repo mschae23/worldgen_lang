@@ -35,16 +35,10 @@ pub struct TypedParameterPart {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct TypedSingleImplementsPart {
+pub struct TypedClassImplementsPart {
     pub reference: TypeId,
     pub parameters: Vec<TypedExpr>,
     pub span: Span, pub parameter_span: Span, pub file_id: FileId,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct TypedClassImplementsPart {
-    pub parts: NonEmpty<TypedSingleImplementsPart>,
-    pub span: Span, pub file_id: FileId,
 }
 
 #[derive(Clone, Debug, PartialEq)]
