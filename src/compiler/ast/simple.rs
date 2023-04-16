@@ -142,7 +142,7 @@ pub enum Decl<'source> {
         key_span: SpanWithFile,
         name: Token<'source>,
         to: TypePart<'source>,
-        condition: Option<Expr<'source>>,
+        condition: Option<(Expr<'source>, Span)>,
     },
     Template {
         key_span: SpanWithFile,

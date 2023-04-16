@@ -373,7 +373,9 @@ impl<'source> Parser<'source> {
         let to = self.parse_type_part("`=`", reporter, lexer_reporter);
 
         let condition = if self.matches(TokenType::If, lexer_reporter) {
-            Some(self.parse_expression(reporter, lexer_reporter))
+            let condition_start = self.current.span.start;
+            let condition = self.parse_expression(reporter, lexer_reporter);
+            Some((condition, Span::new(condition_start, self.previous.span.end)))
         } else { None };
 
         self.expect_declaration_end(reporter, lexer_reporter);

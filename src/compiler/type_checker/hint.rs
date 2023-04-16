@@ -13,7 +13,7 @@ impl TypeHint {
         Self::Options(NonEmpty::new(type_id))
     }
 
-    fn one_way_can_type_convert_to(from: TypeId, to: &Self, allow_coerce: bool, names: &NameResolution) -> bool {
+    fn one_way_can_type_convert_to(from: TypeId, to: &Self, allow_coerce: bool, _names: &NameResolution) -> bool {
         match to {
             TypeHint::Options(options) => match from {
                 _ if options.contains(&from) => true,
@@ -24,7 +24,7 @@ impl TypeHint {
         }
     }
 
-    fn one_way_can_type_convert_from(to: TypeId, from: &Self, allow_coerce: bool, names: &NameResolution) -> bool {
+    fn one_way_can_type_convert_from(to: TypeId, from: &Self, allow_coerce: bool, _names: &NameResolution) -> bool {
         match from {
             TypeHint::Options(from_options) => match to {
                 _ if from_options.contains(&to) => true,

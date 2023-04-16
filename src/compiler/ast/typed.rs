@@ -6,7 +6,7 @@ use crate::compiler::error::FileId;
 use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::compiler::lexer::{Token, TokenType};
 use crate::compiler::name;
-use crate::compiler::name::{NameResolution, TypeId};
+use crate::compiler::name::TypeId;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OwnedToken {
@@ -190,8 +190,8 @@ pub enum TypedExpr {
 impl TypedExpr {
     pub fn type_id(&self) -> TypeId {
         match self {
-            TypedExpr::ConstantFloat(_, _) => name::INT_TYPE_ID,
-            TypedExpr::ConstantInt(_, _) => name::FLOAT_TYPE_ID,
+            TypedExpr::ConstantInt(_, _) => name::INT_TYPE_ID,
+            TypedExpr::ConstantFloat(_, _) => name::FLOAT_TYPE_ID,
             TypedExpr::ConstantBoolean(_, _) => name::BOOLEAN_TYPE_ID,
             TypedExpr::ConstantString(_, _) => name::STRING_TYPE_ID,
             TypedExpr::Identifier(_, type_id) => *type_id,

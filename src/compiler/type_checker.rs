@@ -138,7 +138,7 @@ impl<'source> TypeChecker {
                     Decl::Class { key_span, interface, name, parameters, implements, class_repr, parameter_span } =>
                         self.check_class_decl(key_span, interface, name, parameters, implements, class_repr, parameter_span, &module_path, reporter),
                     Decl::TypeAlias { key_span, name, to, condition } =>
-                        self.check_type_alias_decl(key_span, name, to, condition, reporter),
+                        self.check_type_alias_decl(key_span, name, to, condition, &module_path, reporter),
                     Decl::Template { key_span, kind, parameters, return_type, expr, parameter_span } =>
                         self.check_template_decl(key_span, kind, parameters, return_type, expr, parameter_span, reporter),
                     Decl::Include { key_span, path } =>
@@ -258,8 +258,44 @@ impl<'source> TypeChecker {
         }
     }
 
-    fn check_type_alias_decl(&mut self, key_span: SpanWithFile, name: Token<'source>, to: TypePart<'source>, condition: Option<Expr<'source>>, reporter: &mut TypeErrorReporter<'source>) {
-        self.unimplemented(key_span.span(), "check type alias decl", reporter);
+    fn check_type_alias_decl(&mut self, key_span: SpanWithFile, name: Token<'source>, _to: TypePart<'source>, condition: Option<(Expr<'source>, Span)>, module_path: &[&'source str], reporter: &mut TypeErrorReporter<'source>) {
+        let forward_decl_id = self.forward_decls.find_decl_id_for_duplicate(module_path, &[], |name2, decl|
+            !matches!(decl, ForwardDecl::Template(_)) && name.source() == name2)
+            .expect("Internal compiler error: Missing forward declaration for class");
+
+        if self.forward_decls.has_duplicate(forward_decl_id) {
+            return;
+        }
+
+        let forward_decl = self.forward_decls.get_decl_by_id(forward_decl_id);
+
+        match forward_decl {
+            ForwardDecl::TypeAlias(decl) => {
+                let to = decl.reference;
+
+                let typed_condition = condition.map(|(condition, condition_span)| {
+                    let typed = self.check_expr(condition, TypeHint::new(name::BOOLEAN_TYPE_ID), reporter);
+
+                    if !TypeHint::new(name::BOOLEAN_TYPE_ID).can_convert_from(&TypeHint::new(typed.type_id()), true, &self.names) {
+                        self.error(condition_span, TypeError::MismatchedTypes {
+                            expected: Cow::Borrowed("boolean"),
+                            found: Cow::Owned(self.names.type_name(typed.type_id()).to_owned()),
+                            message: Some(Cow::Borrowed("type alias condition must be of type boolean")),
+                            additional_annotation: Some((key_span, None)),
+                        }, reporter);
+                    }
+
+                    typed
+                });
+
+                self.names.insert_declaration(name.source().to_owned(), TypedDecl::TypeAlias {
+                    name: OwnedToken::from_token(&name),
+                    to,
+                    condition: typed_condition,
+                });
+            },
+            _ => panic!("Internal compiler error: forward decl for `{}` is not a type alias", name.source()),
+        }
     }
 
     fn check_template_decl(&mut self, key_span: SpanWithFile, kind: TemplateKind<'source>, parameters: Vec<ParameterPart<'source>>, return_type: TypePart<'source>, expr: TemplateExpr<'source>, parameter_span: Span, reporter: &mut TypeErrorReporter<'source>) {
