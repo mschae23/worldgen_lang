@@ -3,11 +3,10 @@ use non_empty_vec::NonEmpty;
 use crate::compiler::ast::forward::DeclId;
 use crate::compiler::ast::simple::VariableKind;
 use crate::compiler::error::FileId;
-use crate::compiler::error::span::Span;
+use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::compiler::lexer::{Token, TokenType};
-use crate::compiler::name::TypeId;
-
-// TODO This isn't actually typed yet
+use crate::compiler::name;
+use crate::compiler::name::{NameResolution, TypeId};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OwnedToken {
@@ -56,18 +55,11 @@ pub enum TypedClassReprPart {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TypedDecl {
-    Interface {
-        name: OwnedToken,
-        parameters: Vec<TypedParameterPart>,
-        implements: Option<TypedClassImplementsPart>,
-        class_repr: Option<TypedClassReprPart>,
-        parameter_span: Span,
-    },
     Class {
         name: OwnedToken,
         parameters: Vec<TypedParameterPart>,
-        implements: TypedClassImplementsPart,
-        class_repr: Option<TypedClassReprPart>,
+        implements: Option<TypedClassImplementsPart>,
+        class_repr: TypedClassReprPart,
         parameter_span: Span,
     },
     TypeAlias {
@@ -128,45 +120,52 @@ pub enum TypedTemplateExpr {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TypedExpr {
-    ConstantFloat(f64, FileId, Span),
-    ConstantInt(i32, FileId, Span),
-    ConstantBoolean(bool, FileId, Span),
-    ConstantString(String, FileId, Span),
-    Identifier(OwnedToken),
+    ConstantFloat(f64, SpanWithFile),
+    ConstantInt(i32, SpanWithFile),
+    ConstantBoolean(bool, SpanWithFile),
+    ConstantString(String, SpanWithFile),
+    Identifier(OwnedToken, TypeId),
 
-    Replacement(Span), // `_` token as expression, for type alias conditions
+    Replacement(SpanWithFile, TypeId), // `_` token as expression, for type alias conditions
 
     UnaryOperator {
         operator: OwnedToken,
         expr: Box<TypedExpr>,
+        type_id: TypeId,
     },
     BinaryOperator {
         left: Box<TypedExpr>,
         operator: OwnedToken,
         right: Box<TypedExpr>,
+        type_id: TypeId,
     },
     FunctionCall {
         callee: Box<TypedExpr>,
         args: Vec<TypedExpr>,
+        type_id: TypeId,
         args_span: Span,
     },
     Member { // something::member
         receiver: Box<TypedExpr>,
         name: OwnedToken,
+        type_id: TypeId,
     },
     Receiver { // something.receiver_template
         receiver: Box<TypedExpr>,
         name: OwnedToken,
+        type_id: TypeId,
     },
     Index {
         receiver: Box<TypedExpr>,
         index: Box<TypedExpr>,
         operator_span: Span,
+        type_id: TypeId,
     },
     BuiltinFunctionCall {
         name: OwnedToken,
         args: Vec<TypedExpr>,
         args_span: Span,
+        type_id: TypeId,
     },
     BuiltinType(TypeId),
     TypeCast {
@@ -177,7 +176,7 @@ pub enum TypedExpr {
 
     Object {
         fields: Vec<(OwnedToken, TypedExpr)>,
-        merge_expr: Option<Box<TypedExpr>>,
+        merge_expr: Option<(Box<TypedExpr>, SpanWithFile)>,
         span: Span,
     },
     Array {
@@ -186,4 +185,53 @@ pub enum TypedExpr {
     },
 
     Error,
+}
+
+impl TypedExpr {
+    pub fn type_id(&self) -> TypeId {
+        match self {
+            TypedExpr::ConstantFloat(_, _) => name::INT_TYPE_ID,
+            TypedExpr::ConstantInt(_, _) => name::FLOAT_TYPE_ID,
+            TypedExpr::ConstantBoolean(_, _) => name::BOOLEAN_TYPE_ID,
+            TypedExpr::ConstantString(_, _) => name::STRING_TYPE_ID,
+            TypedExpr::Identifier(_, type_id) => *type_id,
+            TypedExpr::Replacement(_, type_id) => *type_id,
+            TypedExpr::UnaryOperator { type_id, .. } => *type_id,
+            TypedExpr::BinaryOperator { type_id, .. } => *type_id,
+            TypedExpr::FunctionCall { type_id, .. } => *type_id,
+            TypedExpr::Member { type_id, .. } => *type_id,
+            TypedExpr::Receiver { type_id, .. } => *type_id,
+            TypedExpr::Index { type_id, .. } => *type_id,
+            TypedExpr::BuiltinFunctionCall { type_id, .. } => *type_id,
+            TypedExpr::BuiltinType(_) => name::TYPE_TYPE_ID,
+            TypedExpr::TypeCast { to, .. } => *to,
+            TypedExpr::Object { .. } => name::OBJECT_TYPE_ID,
+            TypedExpr::Array { .. } => name::ARRAY_TYPE_ID,
+            TypedExpr::Error => name::ERROR_TYPE_ID,
+        }
+    }
+
+    pub fn type_name<'a>(&self, _names: &'a NameResolution) -> &'a str {
+        match self {
+            TypedExpr::ConstantFloat(_, _) => "int",
+            TypedExpr::ConstantInt(_, _) => "float",
+            TypedExpr::ConstantBoolean(_, _) => "boolean",
+            TypedExpr::ConstantString(_, _) => "string",
+            // TypedExpr::Identifier(_, type_id) => *type_id,
+            // TypedExpr::Replacement(_, type_id) => *type_id,
+            // TypedExpr::UnaryOperator { type_id, .. } => *type_id,
+            // TypedExpr::BinaryOperator { type_id, .. } => *type_id,
+            // TypedExpr::FunctionCall { type_id, .. } => *type_id,
+            // TypedExpr::Member { type_id, .. } => *type_id,
+            // TypedExpr::Receiver { type_id, .. } => *type_id,
+            // TypedExpr::Index { type_id, .. } => *type_id,
+            // TypedExpr::BuiltinFunctionCall { type_id, .. } => *type_id,
+            TypedExpr::BuiltinType(_) => "type",
+            // TypedExpr::TypeCast { to, .. } => *to,
+            TypedExpr::Object { .. } => "object",
+            TypedExpr::Array { .. } => "array",
+            TypedExpr::Error => "error",
+            _ => "unknown",
+        }
+    }
 }

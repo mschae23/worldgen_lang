@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use non_empty_vec::ne_vec;
 use crate::compiler::ast::simple::{Decl, VariableKind};
 use crate::compiler::error::FileId;
-use crate::compiler::error::span::Span;
+use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::compiler::name::{PRIMITIVE_TYPE_COUNT, TypeId, TypeStorage};
 
 pub type DeclId = usize;
@@ -10,7 +10,7 @@ pub type DeclId = usize;
 #[derive(Debug)]
 pub struct ForwardDeclStorage {
     declarations: Vec<ForwardDecl>,
-    declaration_spans: Vec<(FileId, Span)>,
+    declaration_spans: Vec<SpanWithFile>,
     declaration_has_duplicate: Vec<bool>,
     top_level_module: ForwardModule,
 
@@ -39,7 +39,7 @@ impl ForwardDeclStorage {
         &self.declarations[id]
     }
 
-    pub fn get_span_by_id(&self, id: DeclId) -> (FileId, Span) {
+    pub fn get_span_by_id(&self, id: DeclId) -> SpanWithFile {
         self.declaration_spans[id]
     }
 
@@ -88,7 +88,7 @@ impl ForwardDeclStorage {
 
         let id: DeclId = self.declarations.len();
         self.declarations.push(decl);
-        self.declaration_spans.push((file_id, span));
+        self.declaration_spans.push(SpanWithFile::new(file_id, span));
         self.declaration_has_duplicate.push(false);
 
         let name = *path.last().expect("Path has no last element despite previous check");
@@ -231,32 +231,38 @@ impl<'source> ForwardDeclareResult<'source> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardClassDecl {
+    pub key_span: SpanWithFile,
     pub type_id: TypeId, pub name_span: Span,
     pub interface: bool,
     pub parameters: Vec<TypeId>,
     pub implements: Option<TypeId>,
+    pub repr: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardTypeAliasDecl {
+    pub key_span: SpanWithFile,
     pub type_id: TypeId,
     pub reference: TypeId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardTemplateDecl {
+    pub key_span: SpanWithFile,
     pub parameters: Vec<TypeId>,
     pub return_type: TypeId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardConversionDecl {
+    pub key_span: SpanWithFile,
     pub from: TypeId,
     pub to: TypeId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardOptimizeDecl {
+    pub key_span: SpanWithFile,
     pub on: TypeId,
     pub parameters: Vec<TypeId>,
     pub return_type: TypeId,
@@ -264,6 +270,7 @@ pub struct ForwardOptimizeDecl {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardVariableDecl {
+    pub key_span: SpanWithFile,
     // Can't put expr type here, because of type inference,
     // which happens later
     pub kind: VariableKind,
@@ -277,6 +284,41 @@ pub enum ForwardDecl {
     Conversion(ForwardConversionDecl),
     Optimize(ForwardOptimizeDecl),
     Variable(ForwardVariableDecl),
+}
+
+impl ForwardDecl {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ForwardDecl::Class(_) => "class",
+            ForwardDecl::TypeAlias(_) => "interface",
+            ForwardDecl::Template(_) => "template",
+            ForwardDecl::Conversion(_) => "type conversion",
+            ForwardDecl::Optimize(_) => "optimization",
+            ForwardDecl::Variable(_) => "variable",
+        }
+    }
+
+    pub fn kind_with_indefinite_article(&self) -> &'static str {
+        match self {
+            ForwardDecl::Class(_) => "a class",
+            ForwardDecl::TypeAlias(_) => "an interface",
+            ForwardDecl::Template(_) => "a template",
+            ForwardDecl::Conversion(_) => "a type conversion",
+            ForwardDecl::Optimize(_) => "an optimization",
+            ForwardDecl::Variable(_) => "a variable",
+        }
+    }
+
+    pub fn key_span(&self) -> SpanWithFile {
+        match self {
+            ForwardDecl::Class(decl) => decl.key_span,
+            ForwardDecl::TypeAlias(decl) => decl.key_span,
+            ForwardDecl::Template(decl) => decl.key_span,
+            ForwardDecl::Conversion(decl) => decl.key_span,
+            ForwardDecl::Optimize(decl) => decl.key_span,
+            ForwardDecl::Variable(decl) => decl.key_span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

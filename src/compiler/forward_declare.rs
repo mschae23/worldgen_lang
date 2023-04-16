@@ -3,7 +3,7 @@ use std::rc::Rc;
 use crate::compiler::ast::forward::{ForwardClassDecl, ForwardConversionDecl, ForwardDecl, ForwardDeclareResult, ForwardDeclStorage, ForwardOptimizeDecl, ForwardTemplateDecl, ForwardTypeAliasDecl, ForwardVariableDecl};
 use crate::compiler::ast::simple::{Decl, TemplateKind};
 use crate::compiler::error::{Diagnostic, DiagnosticContext, ErrorReporter, FileId, NoteKind, Severity};
-use crate::compiler::error::span::Span;
+use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::compiler::name::{self, SimpleTypeInfo, TypeStorage};
 use crate::Config;
 #[allow(unused)]
@@ -13,8 +13,8 @@ pub type MessageMarker = ();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeclError<'source> {
-    TypeAlreadyDeclared(&'source str, Option<(FileId, Span)>),
-    DeclAlreadyDeclared(String, Option<(FileId, Span)>), // the string has to contain the `` part if it's a name
+    TypeAlreadyDeclared(&'source str, Option<SpanWithFile>),
+    DeclAlreadyDeclared(String, Option<SpanWithFile>), // the string has to contain the `` part if it's a name
     UnresolvedType(&'source str),
     ConversionParameterCount(usize),
 }
@@ -58,13 +58,13 @@ impl<'source> Diagnostic<MessageMarker> for DeclError<'source> {
         }
     }
 
-    fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(FileId, Span, Option<String>)> {
+    fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(SpanWithFile, Option<String>)> {
         match self {
-            Self::TypeAlreadyDeclared(_, first) => if let Some(&(file_id, span)) = first.as_ref() {
-                vec![(file_id, span, Some(String::from("first declared here")))]
+            Self::TypeAlreadyDeclared(_, first) => if let Some(&span) = first.as_ref() {
+                vec![(span, Some(String::from("first declared here")))]
             } else { vec![] },
-            Self::DeclAlreadyDeclared(_, first) => if let Some(&(file_id, span)) = first.as_ref() {
-                vec![(file_id, span, Some(String::from("first declared here")))]
+            Self::DeclAlreadyDeclared(_, first) => if let Some(&span) = first.as_ref() {
+                vec![(span, Some(String::from("first declared here")))]
             } else { vec![] },
             _ => Vec::new(),
         }
@@ -124,20 +124,10 @@ impl<'source> ForwardDeclarer {
                             to_process.extend(declarations.iter().map(ProcessVariant::Decl).rev());
                             to_process.push(ProcessVariant::ModuleStart(name.source()));
                         },
-                        Decl::Interface { name, .. } => {
+                        Decl::Class { interface, name, .. } => {
                             path.push(name.source());
 
-                            if let Err(previous_id) = storage.insert(&path, name.span(), self.file_id, SimpleTypeInfo::Class { interface: true, }) {
-                                let previous_span = storage.get_span(previous_id);
-                                self.error(name.span(), DeclError::TypeAlreadyDeclared(name.source(), previous_span), reporter);
-                            }
-
-                            path.pop();
-                        },
-                        Decl::Class { name, .. } => {
-                            path.push(name.source());
-
-                            if let Err(previous_id) = storage.insert(&path, name.span(), self.file_id, SimpleTypeInfo::Class { interface: false, }) {
+                            if let Err(previous_id) = storage.insert(&path, name.span(), self.file_id, SimpleTypeInfo::Class { interface: *interface, }) {
                                 let previous_span = storage.get_span(previous_id);
                                 self.error(name.span(), DeclError::TypeAlreadyDeclared(name.source(), previous_span), reporter);
                             }
@@ -188,7 +178,7 @@ impl<'source> ForwardDeclarer {
                         to_process.extend(declarations.iter().map(ProcessVariant::Decl).rev());
                         to_process.push(ProcessVariant::ModuleStart(name.source()));
                     },
-                    Decl::Interface { name, parameters, implements, .. } => {
+                    Decl::Class { key_span, interface, name, parameters, implements, class_repr, .. } => {
                         let duplicate = if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], |name2, decl2| !matches!(decl2, ForwardDecl::Template(_)) && name.source() == name2) {
                             storage.mark_duplicate(previous_id);
                             let previous_span = storage.get_span_by_id(previous_id);
@@ -230,65 +220,17 @@ impl<'source> ForwardDeclarer {
                         let type_id = types.get_type_id_by_path(&path).expect("Internal compiler error: type for interface decl can't be found");
 
                         storage.insert_with_type(&path, type_id, ForwardDecl::Class(ForwardClassDecl {
+                            key_span: *key_span,
                             type_id,
                             name_span: name.span(),
-                            interface: true,
+                            interface: *interface,
                             parameters: parameter_types,
                             implements: implements_id,
+                            repr: class_repr.is_some(),
                         }), name.file_id(), name.span());
                         path.pop();
                     },
-                    Decl::Class { name, parameters, implements, .. } => {
-                        let duplicate = if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], |name2, decl2| !matches!(decl2, ForwardDecl::Template(_)) && name.source() == name2) {
-                            storage.mark_duplicate(previous_id);
-                            let previous_span = storage.get_span_by_id(previous_id);
-                            self.error(name.span(), DeclError::DeclAlreadyDeclared(format!("`{}`", name.source()), Some(previous_span)), reporter);
-                            true
-                        } else { false };
-
-                        path.push(name.source());
-
-                        let parameter_type_results = parameters.iter().map(|part| {
-                            types.get_type_id_by_type_part(&path[0..path.len() - 1], &part.parameter_type, self.file_id)
-                        });
-
-                        let mut parameter_types = Vec::with_capacity(parameter_type_results.len());
-
-                        for result in parameter_type_results {
-                            match result {
-                                Ok(id) => parameter_types.push(id),
-                                Err((source, span)) => {
-                                    self.error(span, DeclError::UnresolvedType(source), reporter);
-                                    parameter_types.push(name::ERROR_TYPE_ID);
-                                },
-                            }
-                        }
-
-                        let implements_id = match types.get_type_id_by_type_reference_part(&path[0..path.len() - 1], &implements.name) {
-                            Ok(id) => id,
-                            Err((source, span)) => {
-                                self.error(span, DeclError::UnresolvedType(source), reporter);
-                                name::ERROR_TYPE_ID
-                            },
-                        };
-
-                        if duplicate {
-                            path.pop();
-                            continue;
-                        }
-
-                        let type_id = types.get_type_id_by_path(&path).expect("Internal compiler error: type for class decl can't be found");
-
-                        storage.insert_with_type(&path, type_id, ForwardDecl::Class(ForwardClassDecl {
-                            type_id,
-                            name_span: name.span(),
-                            interface: false,
-                            parameters: parameter_types,
-                            implements: Some(implements_id),
-                        }), name.file_id(), name.span());
-                        path.pop();
-                    },
-                    Decl::TypeAlias { name, to, .. } => {
+                    Decl::TypeAlias { key_span, name, to, .. } => {
                         let duplicate = if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], |name2, decl2| !matches!(decl2, ForwardDecl::Template(_)) && name.source() == name2) {
                             storage.mark_duplicate(previous_id);
                             let previous_span = storage.get_span_by_id(previous_id);
@@ -313,12 +255,13 @@ impl<'source> ForwardDeclarer {
                         }
 
                         storage.insert_with_type(&path, type_id, ForwardDecl::TypeAlias(ForwardTypeAliasDecl {
+                            key_span: *key_span,
                             type_id,
                             reference: to,
                         }), name.file_id(), name.span());
                         path.pop();
                     },
-                    Decl::Template { kind, parameters, return_type, parameter_span, .. } => {
+                    Decl::Template { key_span, kind, parameters, return_type, parameter_span, .. } => {
                         let parameter_type_results = parameters.iter().map(|part| {
                             types.get_type_id_by_type_part(&path, &part.parameter_type, self.file_id)
                         });
@@ -372,6 +315,7 @@ impl<'source> ForwardDeclarer {
                                 TemplateKind::Template { name } => {
                                     path.push(name.source());
                                     storage.insert(&path, ForwardDecl::Template(ForwardTemplateDecl {
+                                        key_span: *key_span,
                                         parameters: parameter_types,
                                         return_type,
                                     }), name.file_id(), name.span());
@@ -384,6 +328,7 @@ impl<'source> ForwardDeclarer {
                                         self.error(*parameter_span, DeclError::ConversionParameterCount(parameter_types.len()), reporter);
                                     } else {
                                         storage.insert(&path, ForwardDecl::Conversion(ForwardConversionDecl {
+                                            key_span: *key_span,
                                             from: parameter_types[0],
                                             to: return_type,
                                         }), self.file_id, *span);
@@ -394,6 +339,7 @@ impl<'source> ForwardDeclarer {
                                 TemplateKind::Optimize { on } => {
                                     path.push("<optimization template>");
                                     storage.insert(&path, ForwardDecl::Optimize(ForwardOptimizeDecl {
+                                        key_span: *key_span,
                                         on: optimize_on.expect("No type ID for optimization template target despite previous check"),
                                         parameters: parameter_types,
                                         return_type,
@@ -403,7 +349,7 @@ impl<'source> ForwardDeclarer {
                             }
                         }
                     },
-                    Decl::Variable { kind, name, .. } => {
+                    Decl::Variable { key_span, kind, name, .. } => {
                         if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], |name2, decl2| !matches!(decl2, ForwardDecl::Template(_)) && name.source() == name2) {
                             storage.mark_duplicate(previous_id);
                             let previous_span = storage.get_span_by_id(previous_id);
@@ -412,6 +358,7 @@ impl<'source> ForwardDeclarer {
 
                         path.push(name.source());
                         storage.insert(&path, ForwardDecl::Variable(ForwardVariableDecl {
+                            key_span: *key_span,
                             kind: *kind,
                         }), name.file_id(), name.span());
                         path.pop();

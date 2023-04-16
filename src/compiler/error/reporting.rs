@@ -5,7 +5,7 @@ use std::rc::Rc;
 use diagnostic_render::diagnostic::AnnotationStyle;
 use diagnostic_render::file::SimpleFiles;
 use diagnostic_render::render::DiagnosticRenderer;
-use crate::compiler::error::span::Span;
+use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::Config;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,7 +97,7 @@ pub trait Diagnostic<D>: Debug {
 
     fn primary_annotation(&self, context: &DiagnosticContext<'_, D>) -> Option<String>;
 
-    fn additional_annotations(&self, context: &DiagnosticContext<'_, D>) -> Vec<(FileId, Span, Option<String>)>;
+    fn additional_annotations(&self, context: &DiagnosticContext<'_, D>) -> Vec<(SpanWithFile, Option<String>)>;
 
     fn primary_note(&self, context: &DiagnosticContext<'_, D>) -> Option<(NoteKind, String)>;
 
@@ -113,7 +113,7 @@ pub struct DiagnosticData {
     pub severity: Severity,
     pub message: String,
     pub primary_annotation: Option<String>,
-    pub additional_annotations: Vec<(FileId, Span, Option<String>)>,
+    pub additional_annotations: Vec<(SpanWithFile, Option<String>)>,
     pub primary_note: Option<(NoteKind, String)>,
     pub additional_notes: Vec<(NoteKind, String)>,
     pub suppressed_messages: u32,
@@ -123,7 +123,7 @@ impl DiagnosticData {
     #[allow(clippy::too_many_arguments)]
     pub fn new(file_id: FileId, span: Span, stage: CompileStage,
                name: &'static str, severity: Severity, message: String,
-               primary_annotation: Option<String>, additional_annotations: Vec<(FileId, Span, Option<String>)>,
+               primary_annotation: Option<String>, additional_annotations: Vec<(SpanWithFile, Option<String>)>,
                primary_note: Option<(NoteKind, String)>, additional_notes: Vec<(NoteKind, String)>,
                suppressed_messages: u32) -> Self {
         DiagnosticData {
@@ -239,9 +239,9 @@ impl ErrorReporting {
 
                 d = d.with_annotation(primary_annotation);
 
-                for (file_id, span, label) in diagnostic.additional_annotations.iter() {
-                    let mut annotation = diagnostic_render::diagnostic::Annotation::new(AnnotationStyle::Secondary, *file_id as usize,
-                        span.start as usize..span.end as usize);
+                for (span, label) in diagnostic.additional_annotations.iter() {
+                    let mut annotation = diagnostic_render::diagnostic::Annotation::new(AnnotationStyle::Secondary, span.file_id as usize,
+                        span.span.start as usize..span.span.end as usize);
 
                     if let Some(label) = label.as_ref() {
                         annotation = annotation.with_label(label);

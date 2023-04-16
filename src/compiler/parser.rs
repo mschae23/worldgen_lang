@@ -48,10 +48,10 @@ impl Display for LiteralKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParserError {
     ExpectedDeclarationEnd,
-    ExpectedAfter(&'static str, &'static str, Option<(FileId, Span)>), // Span represents the token that made the parser expect this
-    ExpectedBefore(&'static str, &'static str, Option<(FileId, Span)>), // Same here
+    ExpectedAfter(&'static str, &'static str, Option<SpanWithFile>), // Span represents the token that made the parser expect this
+    ExpectedBefore(&'static str, &'static str, Option<SpanWithFile>), // Same here
     Expected(&'static str),
-    ParameterCount(u32, u32, FileId, Span),
+    ParameterCount(u32, u32, SpanWithFile),
     TooManyArguments(u32),
     FailedParseLiteral(LiteralKind), // If the lexer is implemented properly, it shouldn't actually be possible for this to happen
     ExpectedDeclaration,
@@ -66,7 +66,7 @@ impl Diagnostic<MessageMarker> for ParserError {
             Self::ExpectedAfter(_, _, _) => "parser/expected_after",
             Self::ExpectedBefore(_, _, _) => "parser/expected_before",
             Self::Expected(_) => "parser/expected",
-            Self::ParameterCount(_, _, _, _) => "parser/parameter_count",
+            Self::ParameterCount(_, _, _) => "parser/parameter_count",
             Self::TooManyArguments(_) => "parser/argument_count",
             Self::FailedParseLiteral(_) => "parser/failed_parse_literal",
             Self::ExpectedDeclaration => "parser/expected_declaration",
@@ -81,7 +81,7 @@ impl Diagnostic<MessageMarker> for ParserError {
             | Self::ExpectedAfter(_, _, _)
             | Self::ExpectedBefore(_, _, _)
             | Self::Expected(_)
-            | Self::ParameterCount(_, _, _, _)
+            | Self::ParameterCount(_, _, _)
             | Self::TooManyArguments(_)
             | Self::FailedParseLiteral(_)
             | Self::ExpectedDeclaration
@@ -96,7 +96,7 @@ impl Diagnostic<MessageMarker> for ParserError {
             Self::ExpectedAfter(a, b, _) => format!("expected {} after {}", a, b),
             Self::ExpectedBefore(a, b, _) => format!("expected {} before {}", a, b),
             Self::Expected(a) => format!("expected {}", a),
-            Self::ParameterCount(expected, got, _, _) => format!("expected {} {}, found {}", *expected,
+            Self::ParameterCount(expected, got, _) => format!("expected {} {}, found {}", *expected,
                 if *expected == 1 { "parameter" } else { "parameters" }, *got),
             Self::TooManyArguments(actual) => format!("more than 255 arguments to a template call are not supported (found {})", *actual),
             Self::FailedParseLiteral(kind) => format!("failed to parse {} literal", kind),
@@ -112,7 +112,7 @@ impl Diagnostic<MessageMarker> for ParserError {
             Self::ExpectedAfter(a, _, _) => Some(format!("expected {} here", a)),
             Self::ExpectedBefore(a, _, _) => Some(format!("expected {} here", a)),
             Self::Expected(a) => Some(format!("expected {} here", a)),
-            Self::ParameterCount(expected, _, _, _) => Some(format!("expected {} {} here",
+            Self::ParameterCount(expected, _, _) => Some(format!("expected {} {} here",
                 *expected, if *expected == 1 { "parameter" } else { "parameters" })),
             Self::TooManyArguments(_) => Some(String::from("found too many arguments here")),
             Self::FailedParseLiteral(_) => None,
@@ -122,11 +122,11 @@ impl Diagnostic<MessageMarker> for ParserError {
         }
     }
 
-    fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(FileId, Span, Option<String>)> {
+    fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(SpanWithFile, Option<String>)> {
         match self {
-            Self::ExpectedAfter(_, _, Some((file_id, span))) => vec![(*file_id, *span, Some(String::from("due to this")))],
-            Self::ExpectedBefore(_, _, Some((file_id, span))) => vec![(*file_id, *span, Some(String::from("due to this")))],
-            Self::ParameterCount(_, _, file_id, span) => vec![(*file_id, *span, Some(String::from("due to this")))],
+            Self::ExpectedAfter(_, _, Some(span)) => vec![(*span, Some(String::from("due to this")))],
+            Self::ExpectedBefore(_, _, Some(span)) => vec![(*span, Some(String::from("due to this")))],
+            Self::ParameterCount(_, _, span) => vec![(*span, Some(String::from("due to this")))],
             _ => Vec::new(),
         }
     }
@@ -298,8 +298,9 @@ impl<'source> Parser<'source> {
 
         self.expect_declaration_end(reporter, lexer_reporter);
 
-        Decl::Interface {
+        Decl::Class {
             key_span: SpanWithFile::new(self.file_id, interface_span),
+            interface: true,
             name,
             parameters,
             implements,
@@ -353,9 +354,10 @@ impl<'source> Parser<'source> {
 
         Decl::Class {
             key_span: SpanWithFile::new(self.file_id, class_span),
+            interface: false,
             name,
             parameters,
-            implements,
+            implements: Some(implements),
             class_repr: repr,
             parameter_span,
         }
@@ -433,9 +435,9 @@ impl<'source> Parser<'source> {
 
         if let TemplateKind::Conversion { span } = kind {
             if parameters.is_empty() {
-                self.error_at_span(parameter_span, ParserError::ParameterCount(1, 0, self.file_id, span), false, reporter);
+                self.error_at_span(parameter_span, ParserError::ParameterCount(1, 0, SpanWithFile::new(self.file_id, span)), false, reporter);
             } else if parameters.len() > 1 {
-                self.error_at_span(parameter_span, ParserError::ParameterCount(1, parameters.len() as u32, self.file_id, span), false, reporter);
+                self.error_at_span(parameter_span, ParserError::ParameterCount(1, parameters.len() as u32, SpanWithFile::new(self.file_id, span)), false, reporter);
             }
         };
 
@@ -948,6 +950,7 @@ impl<'source> Parser<'source> {
                 break;
             }
 
+            let merge_expr_start = self.current.span.start;
             let key = self.parse_expression(reporter, lexer_reporter);
 
             if let Expr::ConstantString(_, _) = &key {
@@ -957,10 +960,12 @@ impl<'source> Parser<'source> {
                 let expr = self.parse_expression(reporter, lexer_reporter);
                 fields.push((name, expr));
             } else {
+                let merge_expr_span = Span::new(merge_expr_start, self.previous.span.end);
+
                 self.expect_after(TokenType::BracketRight, "`}`", "object merge expression", None, reporter, lexer_reporter);
                 let end_pos = self.previous.span.end;
 
-                return Expr::Object { fields, span: Span::new(start_pos, end_pos), merge_expr: Some(Box::new(key)), };
+                return Expr::Object { fields, span: Span::new(start_pos, end_pos), merge_expr: Some((Box::new(key), merge_expr_span)) };
             }
 
             if !self.matches(TokenType::Comma, lexer_reporter) {
@@ -1072,17 +1077,17 @@ impl<'source> Parser<'source> {
 
     #[inline]
     fn expect_after(&mut self, token_type: TokenType, expected: &'static str, after: &'static str, due_to: Option<Span>, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) {
-        self.expect(token_type, ParserError::ExpectedAfter(expected, after, due_to.map(|span| (self.file_id, span))), reporter, lexer_reporter);
+        self.expect(token_type, ParserError::ExpectedAfter(expected, after, due_to.map(|span| SpanWithFile::new(self.file_id, span))), reporter, lexer_reporter);
     }
 
     #[inline]
     fn expect_any_after(&mut self, token_types: &[TokenType], expected: &'static str, after: &'static str, due_to: Option<Span>, reporter: &mut ParserErrorReporter, lexer_reporter: &mut LexerErrorReporter) {
-        self.expect_any(token_types, ParserError::ExpectedAfter(expected, after, due_to.map(|span| (self.file_id, span))), reporter, lexer_reporter);
+        self.expect_any(token_types, ParserError::ExpectedAfter(expected, after, due_to.map(|span| SpanWithFile::new(self.file_id, span))), reporter, lexer_reporter);
     }
 
     #[inline]
     fn error_before(&mut self, at: Span, expected: &'static str, before: &'static str, due_to: Option<Span>, reporter: &mut ParserErrorReporter) {
-        self.error_at_span(at, ParserError::ExpectedBefore(expected, before, due_to.map(|span| (self.file_id, span))), true, reporter);
+        self.error_at_span(at, ParserError::ExpectedBefore(expected, before, due_to.map(|span| SpanWithFile::new(self.file_id, span))), true, reporter);
     }
 
     fn matches(&mut self, token_type: TokenType, lexer_reporter: &mut LexerErrorReporter) -> bool { // Should be called "match", but that's a keyword

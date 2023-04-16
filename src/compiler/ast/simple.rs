@@ -129,19 +129,12 @@ pub enum Decl<'source> {
         name: Token<'source>,
         declarations: Vec<Decl<'source>>,
     },
-    Interface {
+    Class {
         key_span: SpanWithFile,
+        interface: bool,
         name: Token<'source>,
         parameters: Vec<ParameterPart<'source>>,
         implements: Option<ClassImplementsPart<'source>>,
-        class_repr: Option<ClassReprPart<'source>>,
-        parameter_span: Span,
-    },
-    Class {
-        key_span: SpanWithFile,
-        name: Token<'source>,
-        parameters: Vec<ParameterPart<'source>>,
-        implements: ClassImplementsPart<'source>,
         class_repr: Option<ClassReprPart<'source>>,
         parameter_span: Span,
     },
@@ -246,7 +239,7 @@ pub enum Expr<'source> {
 
     Object {
         fields: Vec<(Token<'source>, Expr<'source>)>,
-        merge_expr: Option<Box<Expr<'source>>>,
+        merge_expr: Option<(Box<Expr<'source>>, Span)>,
         span: Span,
     },
     Array {

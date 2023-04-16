@@ -9,6 +9,10 @@ pub enum TypeHint {
 }
 
 impl TypeHint {
+    pub fn new(type_id: TypeId) -> Self {
+        Self::Options(NonEmpty::new(type_id))
+    }
+
     fn one_way_can_type_convert_to(from: TypeId, to: &Self, allow_coerce: bool, names: &NameResolution) -> bool {
         match to {
             TypeHint::Options(options) => match from {

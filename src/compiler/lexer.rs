@@ -1,7 +1,7 @@
 use std::fmt::{Debug, Display, Formatter};
 use std::str::Chars;
 use crate::compiler::error::{ErrorReporter, Diagnostic, DiagnosticContext, Severity, NoteKind, FileId};
-use crate::compiler::error::span::Span;
+use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::util;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,7 +144,7 @@ impl Diagnostic<MessageMarker> for LexerError {
         None
     }
 
-    fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(FileId, Span, Option<String>)> {
+    fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(SpanWithFile, Option<String>)> {
         Vec::new()
     }
 

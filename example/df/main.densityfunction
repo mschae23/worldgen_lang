@@ -1,5 +1,5 @@
 module df {
-    type number = float if _ >= -1.0e7 && _ <= 1.0e7; interface number() = 4;
+    type number = float if _ >= -1.0e7 && _ <= 1.0e7;
 
     interface density_function(id: string) = { "type": id, this };
 

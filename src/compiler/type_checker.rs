@@ -1,12 +1,16 @@
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::rc::Rc;
 use non_empty_vec::NonEmpty;
 use crate::compiler::ast::forward::{ForwardDecl, ForwardDeclStorage};
 use crate::compiler::ast::simple::{ClassImplementsPart, ClassReprPart, Decl, Expr, ParameterPart, TemplateExpr, TemplateKind, TypePart, VariableKind};
+use crate::compiler::ast::typed::{OwnedToken, TypedClassImplementsPart, TypedClassReprPart, TypedDecl, TypedDefinedClassReprPart, TypedExpr, TypedParameterPart};
 use crate::compiler::error::{Diagnostic, DiagnosticContext, ErrorReporter, FileId, NoteKind, Severity};
 use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::compiler::lexer::Token;
+use crate::compiler::name;
 use crate::compiler::name::{NameResolution, TypeStorage};
+use crate::compiler::type_checker::hint::TypeHint;
 use crate::Config;
 #[allow(unused)]
 use crate::println_debug;
@@ -17,12 +21,30 @@ pub type MessageMarker = ();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeError<'source> {
+    ImplementsNotClass {
+        name: &'source str,
+        actual_kind: &'source str,
+        defined_at: SpanWithFile,
+    },
+    ClassMissingDef {
+        clause: &'static str,
+        name: &'source str,
+    },
+    MismatchedTypes {
+        expected: Cow<'source, str>,
+        found: Cow<'source, str>,
+        message: Option<Cow<'source, str>>,
+        additional_annotation: Option<(SpanWithFile, Option<Cow<'source, str>>)>,
+    },
     Unimplemented(&'source str),
 }
 
 impl<'source> Diagnostic<MessageMarker> for TypeError<'source> {
     fn name(&self) -> &'static str {
         match self {
+            Self::ImplementsNotClass { .. } => "type/implements_not_class",
+            Self::ClassMissingDef { .. } => "type/class_missing_def",
+            Self::MismatchedTypes { .. } => "type/mismatched_types",
             Self::Unimplemented(_) => "type/unimplemented",
         }
     }
@@ -36,19 +58,28 @@ impl<'source> Diagnostic<MessageMarker> for TypeError<'source> {
 
     fn message(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> String {
         match self {
+            Self::ImplementsNotClass { name, actual_kind, .. } => format!("expected class or interface, but `{}` is {}", name, actual_kind),
+            Self::ClassMissingDef { clause, name } => format!("missing {} definition for class `{}`", clause, name),
+            Self::MismatchedTypes { expected, found, .. } => format!("mismatched types: expected {}, found {}", expected, found),
             Self::Unimplemented(msg) => format!("not implemented yet: {}", msg),
         }
     }
 
     fn primary_annotation(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Option<String> {
         match self {
+            Self::ImplementsNotClass { name, .. } => Some(format!("`{}` referenced here", name)),
+            Self::ClassMissingDef { name, .. } => Some(format!("`{}` is declared here", name)),
+            Self::MismatchedTypes { message, .. } => message.as_ref().map(|cow| cow.clone().into_owned()),
             Self::Unimplemented(_) => Some(String::from("unimplemented feature used here")),
         }
     }
 
-    fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(FileId, Span, Option<String>)> {
-        #[allow(clippy::match_single_binding)]
+    fn additional_annotations(&self, _context: &DiagnosticContext<'_, MessageMarker>) -> Vec<(SpanWithFile, Option<String>)> {
         match self {
+            Self::ImplementsNotClass { name, defined_at, .. } => vec![(*defined_at, Some(format!("`{}` originally defined here", name)))],
+            Self::MismatchedTypes { additional_annotation, .. } => additional_annotation.as_ref().map(|&(span, ref label)| (span, label.as_ref()
+                .map(|label| label.clone().into_owned())))
+                .into_iter().collect(),
             _ => Vec::new(),
         }
     }
@@ -104,10 +135,8 @@ impl<'source> TypeChecker {
                             .map(ProcessVariant::Decl).rev());
                         process_stack.push(ProcessVariant::ModuleStart(name.source()));
                     },
-                    Decl::Interface { key_span, name, parameters, implements, class_repr, parameter_span } =>
-                        self.check_interface_decl(key_span, name, parameters, implements, class_repr, parameter_span, &module_path, reporter),
-                    Decl::Class { key_span, name, parameters, implements, class_repr, parameter_span } =>
-                        self.check_class_decl(key_span, name, parameters, implements, class_repr, parameter_span, reporter),
+                    Decl::Class { key_span, interface, name, parameters, implements, class_repr, parameter_span } =>
+                        self.check_class_decl(key_span, interface, name, parameters, implements, class_repr, parameter_span, &module_path, reporter),
                     Decl::TypeAlias { key_span, name, to, condition } =>
                         self.check_type_alias_decl(key_span, name, to, condition, reporter),
                     Decl::Template { key_span, kind, parameters, return_type, expr, parameter_span } =>
@@ -132,50 +161,213 @@ impl<'source> TypeChecker {
         }
     }
 
-    fn check_interface_decl(&mut self, key_span: SpanWithFile, name: Token<'source>, parameters: Vec<ParameterPart<'source>>, implements: Option<ClassImplementsPart<'source>>, class_repr: Option<ClassReprPart<'source>>, parameter_span: Span, module_path: &[&'source str], reporter: &mut TypeErrorReporter<'source>) {
-        self.error(key_span.span(), TypeError::Unimplemented("check interface decl"), reporter);
-
+    fn check_class_decl(&mut self, _key_span: SpanWithFile, interface: bool, name: Token<'source>, parameters: Vec<ParameterPart<'source>>, implements: Option<ClassImplementsPart<'source>>, class_repr: Option<ClassReprPart<'source>>, parameter_span: Span, module_path: &[&'source str], reporter: &mut TypeErrorReporter<'source>) {
         let forward_decl_id = self.forward_decls.find_decl_id_for_duplicate(module_path, &[], |name2, decl|
             !matches!(decl, ForwardDecl::Template(_)) && name.source() == name2)
-            .expect("Internal compiler error: Missing forward declaration for interface");
+            .expect("Internal compiler error: Missing forward declaration for class");
+
+        if self.forward_decls.has_duplicate(forward_decl_id) {
+            return;
+        }
 
         let forward_decl = self.forward_decls.get_decl_by_id(forward_decl_id);
 
         match forward_decl {
             ForwardDecl::Class(decl) => {
-                // TODO
+                let implements_type = decl.implements;
+
+                let typed_parameters = parameters.into_iter().enumerate().map(|(i, part)| TypedParameterPart {
+                    name: OwnedToken::from_token(&part.name),
+                    parameter_type: decl.parameters[i],
+                }).collect::<Vec<_>>();
+
+                let typed_implements = implements.zip(implements_type).map(|(part, implements_type)| {
+                    let parameter_types = self.forward_decls.get_decl_by_type_id(implements_type).and_then(|referenced_decl| {
+                        match referenced_decl {
+                            ForwardDecl::Class(decl) => Some(decl.parameters.clone()),
+                            _ => {
+                                self.error(part.span, TypeError::ImplementsNotClass { name: part.name.0.last().source(),
+                                    actual_kind: referenced_decl.kind_with_indefinite_article(),
+                                    defined_at: referenced_decl.key_span(),
+                                }, reporter);
+                                None
+                            }
+                        }
+                    });
+
+                    TypedClassImplementsPart {
+                        reference: implements_type,
+                        parameters: part.parameters.into_iter().enumerate()
+                            .map(|(i, parameter)| self.check_expr(parameter,
+                                parameter_types.as_ref().map(|types| TypeHint::Options(NonEmpty::new(types[i]))).unwrap_or(TypeHint::Any),
+                                    reporter)).collect(),
+                        span: part.span,
+                        parameter_span: part.parameter_span,
+                        file_id: self.file_id,
+                    }
+                });
+
+                let typed_class_repr = class_repr.map(|part| TypedClassReprPart::Defined(TypedDefinedClassReprPart {
+                    expr: self.check_expr(part.expr, TypeHint::Any, reporter),
+                    span: part.span,
+                    file_id: self.file_id,
+                })).unwrap_or_else(|| {
+                    let parent = implements_type.and_then(|id| self.forward_decls.get_decl_id_from_type_id(id));
+                    let mut parent = parent.and_then(|parent| match self.forward_decls.get_decl_by_id(parent) {
+                        ForwardDecl::Class(decl) => Some((parent, decl)),
+                        _ => None,
+                    });
+
+                    while let Some((parent_id, decl)) = parent {
+                        if decl.repr {
+                            return TypedClassReprPart::Inherited(parent_id);
+                        } else {
+                            parent = parent.and_then(|(_, parent)| parent.implements
+                                .and_then(|parent| self.forward_decls.get_decl_id_from_type_id(parent))
+                                .and_then(|parent| match self.forward_decls.get_decl_by_id(parent) {
+                                ForwardDecl::Class(decl) => Some((parent, decl)),
+                                _ => None,
+                            }));
+                        }
+                    }
+
+                    TypedClassReprPart::None
+                });
+
+                if !interface {
+                    // Classes need an implements clause and a repr
+
+                    if typed_implements.is_none() {
+                        self.error(name.span(), TypeError::ClassMissingDef { clause: "implements", name: name.source(), }, reporter);
+                    }
+
+                    if typed_class_repr == TypedClassReprPart::None {
+                        self.error(name.span(), TypeError::ClassMissingDef { clause: "representation", name: name.source(), }, reporter);
+                    }
+                }
+
+                self.names.insert_declaration(name.source().to_owned(), TypedDecl::Class {
+                    name: OwnedToken::from_token(&name),
+                    parameters: typed_parameters,
+                    implements: typed_implements,
+                    class_repr: typed_class_repr,
+                    parameter_span,
+                });
             },
-            _ => if !self.forward_decls.has_duplicate(forward_decl_id) {
-                panic!("Internal compiler error: forward decl for `{}` interface is not a class", name.source());
-            },
+            _ => panic!("Internal compiler error: forward decl for `{}` is not a class", name.source()),
         }
     }
 
-    fn check_class_decl(&mut self, key_span: SpanWithFile, name: Token<'source>, parameters: Vec<ParameterPart<'source>>, implements: ClassImplementsPart<'source>, class_repr: Option<ClassReprPart<'source>>, parameter_span: Span, reporter: &mut TypeErrorReporter<'source>) {
-        self.error(key_span.span(), TypeError::Unimplemented("check class decl"), reporter);
-    }
-
     fn check_type_alias_decl(&mut self, key_span: SpanWithFile, name: Token<'source>, to: TypePart<'source>, condition: Option<Expr<'source>>, reporter: &mut TypeErrorReporter<'source>) {
-        self.error(key_span.span(), TypeError::Unimplemented("check type alias decl"), reporter);
+        self.unimplemented(key_span.span(), "check type alias decl", reporter);
     }
 
     fn check_template_decl(&mut self, key_span: SpanWithFile, kind: TemplateKind<'source>, parameters: Vec<ParameterPart<'source>>, return_type: TypePart<'source>, expr: TemplateExpr<'source>, parameter_span: Span, reporter: &mut TypeErrorReporter<'source>) {
-        self.error(key_span.span(), TypeError::Unimplemented("check template decl"), reporter);
+        self.unimplemented(key_span.span(), "check template decl", reporter);
     }
 
     fn check_include(&mut self, key_span: SpanWithFile, path: Token<'source>, process_stack: &mut Vec<ProcessVariant>, reporter: &mut TypeErrorReporter<'source>) {
-        self.error(key_span.span(), TypeError::Unimplemented("check include decl"), reporter);
+        self.unimplemented(key_span.span(), "check include decl", reporter);
     }
 
     fn check_import(&mut self, key_span: SpanWithFile, path: NonEmpty<Token<'source>>, selector: Option<NonEmpty<Token<'source>>>, span: Span, reporter: &mut TypeErrorReporter<'source>) {
-        self.error(key_span.span(), TypeError::Unimplemented("check import decl"), reporter);
+        self.unimplemented(key_span.span(), "check import decl", reporter);
     }
 
     fn check_variable(&mut self, key_span: SpanWithFile, kind: VariableKind, name: Token<'source>, expr: Expr<'source>, span: Span, reporter: &mut TypeErrorReporter<'source>) {
-        self.error(key_span.span(), TypeError::Unimplemented("check variable decl"), reporter);
+        self.unimplemented(key_span.span(), "check variable decl", reporter);
+    }
+
+    fn check_expr(&mut self, expr: Expr<'source>, _type_hint: TypeHint, reporter: &mut TypeErrorReporter<'source>) -> TypedExpr {
+        match expr {
+            Expr::ConstantInt(value, span) => TypedExpr::ConstantInt(value, SpanWithFile::new(self.file_id, span)),
+            Expr::ConstantFloat(value, span) => TypedExpr::ConstantFloat(value, SpanWithFile::new(self.file_id, span)),
+            Expr::ConstantBoolean(value, span) => TypedExpr::ConstantBoolean(value, SpanWithFile::new(self.file_id, span)),
+            Expr::ConstantString(value, span) => TypedExpr::ConstantString(value, SpanWithFile::new(self.file_id, span)),
+            Expr::Identifier(name) => {
+                self.unimplemented(name.span(), "check identifier", reporter);
+                TypedExpr::Identifier(OwnedToken::from_token(&name), name::ERROR_TYPE_ID)
+            },
+            Expr::Replacement(span) => {
+                self.unimplemented(span, "check replacement expr", reporter);
+                TypedExpr::Error
+            },
+            Expr::UnaryOperator { operator, .. } => {
+                self.unimplemented(operator.span(), "check operator expr", reporter);
+                TypedExpr::Error
+            },
+            Expr::BinaryOperator { operator, .. } => {
+                self.unimplemented(operator.span(), "check operator expr", reporter);
+                TypedExpr::Error
+            },
+            Expr::FunctionCall { args_span, .. } => {
+                self.unimplemented(args_span, "check function call expr", reporter);
+                TypedExpr::Error
+            },
+            Expr::Member { name, .. } => {
+                self.unimplemented(name.span(), "check member expr", reporter);
+                TypedExpr::Error
+            },
+            Expr::Receiver { name, .. } => {
+                self.unimplemented(name.span(), "check receiver expr", reporter);
+                TypedExpr::Error
+            },
+            Expr::Index { operator_span, .. } => {
+                self.unimplemented(operator_span, "check index expr", reporter);
+                TypedExpr::Error
+            },
+            Expr::BuiltinFunctionCall { name, .. } => {
+                self.unimplemented(name.span(), "check built-in function call expr", reporter);
+                TypedExpr::Error
+            },
+            Expr::BuiltinType(part) => {
+                self.unimplemented(part.span(), "check type expr", reporter);
+                TypedExpr::Error
+            },
+            Expr::TypeCast { operator_span, .. } => {
+                self.unimplemented(operator_span, "check type cast expr", reporter);
+                TypedExpr::Error
+            },
+            Expr::Object { fields, merge_expr, span } => {
+                let typed_merge_expr = merge_expr.map(|(merge_expr, span)|
+                    (Box::new(self.check_expr(*merge_expr, TypeHint::new(name::OBJECT_TYPE_ID), reporter)), SpanWithFile::new(self.file_id, span)));
+
+                if let Some((typed_merge_expr, merge_expr_span)) = &typed_merge_expr {
+                    if typed_merge_expr.type_id() != name::OBJECT_TYPE_ID {
+                        self.error(merge_expr_span.span(), TypeError::MismatchedTypes {
+                            expected: Cow::Borrowed("object"),
+                            found: Cow::Owned(typed_merge_expr.type_name(&self.names).to_owned()),
+                            message: Some(Cow::Borrowed("merge expression needs to be of type object")),
+                            additional_annotation: Some((SpanWithFile::new(self.file_id, span), None)),
+                        }, reporter);
+                    }
+                }
+
+                TypedExpr::Object {
+                    fields: fields.into_iter().map(|(key, field)|
+                        (OwnedToken::from_token(&key), self.check_expr(field, TypeHint::Any, reporter))
+                    ).collect(),
+                    merge_expr: typed_merge_expr,
+                    span,
+                }
+            },
+            Expr::Array { elements, span } => {
+                TypedExpr::Array {
+                    elements: elements.into_iter().map(|element|
+                        self.check_expr(element, TypeHint::Any, reporter)
+                    ).collect(),
+                    span,
+                }
+            },
+            Expr::Error => TypedExpr::Error,
+        }
     }
 
     fn error(&self, span: Span, message: TypeError<'source>, reporter: &mut TypeErrorReporter<'source>) {
         reporter.report(span, message, false);
+    }
+
+    fn unimplemented(&self, span: Span, message: &'source str, reporter: &mut TypeErrorReporter<'source>) {
+        self.error(span, TypeError::Unimplemented(message), reporter);
     }
 }

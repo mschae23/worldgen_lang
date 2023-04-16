@@ -6,7 +6,7 @@ use non_empty_vec::{ne_vec, NonEmpty};
 use crate::compiler::ast::simple::{PrimitiveTypeKind, TypePart, TypeReferencePart};
 use crate::compiler::ast::typed::TypedDecl;
 use crate::compiler::error::FileId;
-use crate::compiler::error::span::Span;
+use crate::compiler::error::span::{Span, SpanWithFile};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PositionedName {
@@ -53,7 +53,7 @@ pub struct TypeStorage {
     types: Vec<SimpleTypeInfo>,
     top_level_module: TypeModule,
     type_path_lookup: Vec<Option<PathBuf>>,
-    type_span_lookup: Vec<Option<(FileId, Span)>>,
+    type_span_lookup: Vec<Option<SpanWithFile>>,
 }
 
 impl TypeStorage {
@@ -122,7 +122,7 @@ impl TypeStorage {
                 let id = self.types.len();
                 self.types.push(SimpleTypeInfo::Template);
                 self.type_path_lookup.push(None);
-                self.type_span_lookup.push(Some((file_id, args_span.mix(return_type.span()))));
+                self.type_span_lookup.push(Some(SpanWithFile::new(file_id, args_span.mix(return_type.span()))));
                 Ok(id)
             },
         }
@@ -173,7 +173,7 @@ impl TypeStorage {
         Err((first.source(), first.span()))
     }
 
-    pub fn get_span(&self, type_id: TypeId) -> Option<(FileId, Span)> {
+    pub fn get_span(&self, type_id: TypeId) -> Option<SpanWithFile> {
         if type_id < PRIMITIVE_TYPE_COUNT {
             None
         } else {
@@ -199,7 +199,7 @@ impl TypeStorage {
 
         self.types.push(type_info);
         self.type_path_lookup.push(Some(path.iter().collect()));
-        self.type_span_lookup.push(Some((file_id, span)));
+        self.type_span_lookup.push(Some(SpanWithFile::new(file_id, span)));
 
         Ok(id)
     }
