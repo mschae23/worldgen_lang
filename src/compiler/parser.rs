@@ -446,6 +446,7 @@ impl<'source> Parser<'source> {
         self.expect_after(TokenType::Colon, "`:`", "`)`", Some(template_span), reporter, lexer_reporter);
         let return_type = self.parse_type_part("`:`", reporter, lexer_reporter);
 
+        let expr_start = self.current.span.start;
         self.expect_after(TokenType::BracketLeft, "`{`", "template return type", Some(template_span), reporter, lexer_reporter);
         let expr = self.parse_block_template_expression(reporter, lexer_reporter);
 
@@ -456,6 +457,7 @@ impl<'source> Parser<'source> {
             return_type,
             expr,
             parameter_span,
+            expr_span: Span::new(expr_start, self.previous.span.end),
         }
     }
 
@@ -705,6 +707,7 @@ impl<'source> Parser<'source> {
         };
 
         TemplateExpr::If {
+            key_span: if_span,
             condition,
             then: Box::new(then_block),
             otherwise: Box::new(otherwise_block),

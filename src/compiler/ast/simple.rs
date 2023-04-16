@@ -151,6 +151,7 @@ pub enum Decl<'source> {
         return_type: TypePart<'source>,
         expr: TemplateExpr<'source>,
         parameter_span: Span,
+        expr_span: Span,
     },
     Include {
         key_span: SpanWithFile,
@@ -180,6 +181,7 @@ pub enum TemplateExpr<'source> {
         span: Span,
     },
     If {
+        key_span: Span,
         condition: Expr<'source>,
         then: Box<TemplateExpr<'source>>,
         otherwise: Box<TemplateExpr<'source>>,

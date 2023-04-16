@@ -4,7 +4,7 @@ use std::rc::Rc;
 use non_empty_vec::NonEmpty;
 use crate::compiler::ast::forward::{ForwardDecl, ForwardDeclStorage};
 use crate::compiler::ast::simple::{ClassImplementsPart, ClassReprPart, Decl, Expr, ParameterPart, TemplateExpr, TemplateKind, TypePart, VariableKind};
-use crate::compiler::ast::typed::{OwnedToken, TypedClassImplementsPart, TypedClassReprPart, TypedDecl, TypedDefinedClassReprPart, TypedExpr, TypedParameterPart};
+use crate::compiler::ast::typed::{OwnedToken, TypedClassImplementsPart, TypedClassReprPart, TypedDecl, TypedDefinedClassReprPart, TypedExpr, TypedParameterPart, TypedTemplateDecl, TypedTemplateExpr};
 use crate::compiler::error::{Diagnostic, DiagnosticContext, ErrorReporter, FileId, NoteKind, Severity};
 use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::compiler::lexer::Token;
@@ -145,8 +145,8 @@ impl<'source> TypeChecker {
                         self.check_class_decl(key_span, interface, name, parameters, implements, class_repr, parameter_span, &module_path, reporter),
                     Decl::TypeAlias { key_span, name, to, condition } =>
                         self.check_type_alias_decl(key_span, name, to, condition, &module_path, reporter),
-                    Decl::Template { key_span, kind, parameters, return_type, expr, parameter_span } =>
-                        self.check_template_decl(key_span, kind, parameters, return_type, expr, parameter_span, reporter),
+                    Decl::Template { key_span, kind, parameters, return_type, expr, parameter_span, expr_span } =>
+                        self.check_template_decl(key_span, kind, parameters, return_type, expr, parameter_span, expr_span, &module_path, reporter),
                     Decl::Include { key_span, path } =>
                         self.check_include(key_span, path, &mut process_stack, reporter),
                     Decl::Import { key_span, path, selector, span } =>
@@ -267,7 +267,7 @@ impl<'source> TypeChecker {
     fn check_type_alias_decl(&mut self, key_span: SpanWithFile, name: Token<'source>, _to: TypePart<'source>, condition: Option<(Expr<'source>, Span)>, module_path: &[&'source str], reporter: &mut TypeErrorReporter<'source>) {
         let forward_decl_id = self.forward_decls.find_decl_id_for_duplicate(module_path, &[], |name2, decl|
             !matches!(decl, ForwardDecl::Template(_)) && name.source() == name2)
-            .expect("Internal compiler error: Missing forward declaration for class");
+            .expect("Internal compiler error: Missing forward declaration for type alias");
 
         if self.forward_decls.has_duplicate(forward_decl_id) {
             return;
@@ -304,8 +304,74 @@ impl<'source> TypeChecker {
         }
     }
 
-    fn check_template_decl(&mut self, key_span: SpanWithFile, kind: TemplateKind<'source>, parameters: Vec<ParameterPart<'source>>, return_type: TypePart<'source>, expr: TemplateExpr<'source>, parameter_span: Span, reporter: &mut TypeErrorReporter<'source>) {
-        self.unimplemented(key_span.span(), "check template decl", reporter);
+    fn check_template_decl(&mut self, key_span: SpanWithFile, kind: TemplateKind<'source>, parameters: Vec<ParameterPart<'source>>, return_type_part: TypePart<'source>, expr: TemplateExpr<'source>, parameter_span: Span, expr_span: Span, module_path: &[&'source str], reporter: &mut TypeErrorReporter<'source>) {
+        let parameter_types = parameters.iter()
+            .map(|part| self.types.get_type_id_by_type_part(module_path, &part.parameter_type, self.file_id).unwrap_or(name::ERROR_TYPE_ID)).collect::<Vec<_>>();
+        let return_type = self.types.get_type_id_by_type_part(module_path, &return_type_part, self.file_id).unwrap_or(name::ERROR_TYPE_ID);
+        let optimize_on_type = match &kind {
+            TemplateKind::Optimize { on } => Some(self.types.get_type_id_by_type_part(module_path, on, self.file_id).unwrap_or(name::ERROR_TYPE_ID)),
+            _ => None,
+        };
+
+        if return_type == name::ERROR_TYPE_ID || parameter_types.contains(&name::ERROR_TYPE_ID) || optimize_on_type.map(|id| id == name::ERROR_TYPE_ID).unwrap_or(false) {
+            // Any errors here should already have been reported by forward declaration
+            println_debug!("Can't resolve types for parameter or return of template");
+            return;
+        }
+
+        let forward_decl_id = self.forward_decls.find_decl_id_for_duplicate(module_path, &[], |name2, decl| {
+            match decl {
+                ForwardDecl::Template(decl) => match &kind {
+                    TemplateKind::Template { name, .. } => name.source() == name2 && parameter_types == decl.parameters && return_type == decl.return_type,
+                    _ => false,
+                },
+                ForwardDecl::Conversion(decl) => match &kind {
+                    TemplateKind::Conversion { .. } => parameter_types.len() == 1 && parameter_types[0] == decl.from && return_type == decl.to,
+                    _ => false,
+                },
+                ForwardDecl::Optimize(decl) => if let Some(on) = optimize_on_type {
+                    on == decl.on && parameter_types == decl.parameters && return_type == decl.return_type
+                } else { false },
+                _ => false,
+            }
+        })
+            .expect("Internal compiler error: Missing forward declaration for template");
+
+        if self.forward_decls.has_duplicate(forward_decl_id) {
+            return;
+        }
+
+        let forward_decl = self.forward_decls.get_decl_by_id(forward_decl_id);
+
+        match kind {
+            TemplateKind::Template { name, .. } => match forward_decl {
+                ForwardDecl::Template(decl) => {
+                    let typed_parameters = decl.parameters.iter().enumerate().map(|(i, id)| TypedParameterPart {
+                        name: OwnedToken::from_token(&parameters[i].name), parameter_type: *id }).collect();
+                    let typed_expr = self.check_template_expr(expr, TypeHint::new(return_type), reporter);
+
+                    if !TypeHint::new(typed_expr.type_id()).can_convert_to(&TypeHint::new(return_type), true, &self.names) {
+                        self.error(expr_span, TypeError::MismatchedTypes {
+                            expected: Cow::Owned(self.names.type_name(return_type).to_owned()),
+                            found: Cow::Owned(self.names.type_name(typed_expr.type_id()).to_owned()),
+                            message: Some(Cow::Borrowed("template expression must have the template's return type")),
+                            additional_annotation: Some((SpanWithFile::new(self.file_id, return_type_part.span()), Some(Cow::Borrowed("return type defined here")))),
+                        }, reporter);
+                    }
+
+                    self.names.insert_template_declaration(TypedTemplateDecl {
+                        name: OwnedToken::from_token(&name),
+                        parameters: typed_parameters,
+                        return_type,
+                        expr: typed_expr,
+                        parameter_span,
+                    });
+                },
+                _ => panic!("Internal compiler error: forward decl for `{}` is not a template", name.source()),
+            },
+            TemplateKind::Conversion { .. } => self.unimplemented(key_span.span(), "check type conversion decl", reporter),
+            TemplateKind::Optimize { .. } => self.unimplemented(key_span.span(), "check optimization decl", reporter),
+        }
     }
 
     fn check_include(&mut self, key_span: SpanWithFile, path: Token<'source>, process_stack: &mut Vec<DeclProcessVariant>, reporter: &mut TypeErrorReporter<'source>) {
@@ -318,6 +384,47 @@ impl<'source> TypeChecker {
 
     fn check_variable(&mut self, key_span: SpanWithFile, kind: VariableKind, name: Token<'source>, expr: Expr<'source>, span: Span, reporter: &mut TypeErrorReporter<'source>) {
         self.unimplemented(key_span.span(), "check variable decl", reporter);
+    }
+
+    fn check_template_expr(&mut self, expr: TemplateExpr<'source>, type_hint: TypeHint, reporter: &mut TypeErrorReporter) -> TypedTemplateExpr {
+        // This is fine as a recursive function, and would be easy to refactor to non-recursive anyway
+        match expr {
+            TemplateExpr::Block { expressions, span } => {
+                let typed_expressions = expressions.into_iter().map(|expr| self.check_template_expr(expr, type_hint.clone(), reporter))
+                    .collect::<Vec<_>>();
+
+                // SAFETY: typed_expressions should have the same length as expressions, so it should
+                //         also never be empty.
+
+                TypedTemplateExpr::Block {
+                    expressions: unsafe { NonEmpty::new_unchecked(typed_expressions) },
+                    span,
+                }
+            },
+            TemplateExpr::If { key_span, condition, then, otherwise, condition_span } => {
+                let typed_condition = self.check_expr(condition, TypeHint::new(name::BOOLEAN_TYPE_ID), reporter);
+                let typed_then = Box::new(self.check_template_expr(*then, type_hint.clone(), reporter));
+                let typed_otherwise = Box::new(self.check_template_expr(*otherwise, type_hint, reporter));
+
+                if !TypeHint::new(name::BOOLEAN_TYPE_ID).can_convert_from(&TypeHint::new(typed_condition.type_id()), true, &self.names) {
+                    self.error(condition_span, TypeError::MismatchedTypes {
+                        expected: Cow::Borrowed("boolean"),
+                        found: Cow::Owned(self.names.type_name(typed_condition.type_id()).to_owned()),
+                        message: Some(Cow::Borrowed("condition of `if` expression needs to be of type boolean")),
+                        additional_annotation: Some((SpanWithFile::new(self.file_id, key_span), None)),
+                    }, reporter);
+                }
+
+                TypedTemplateExpr::If {
+                    key_span: SpanWithFile::new(self.file_id, key_span),
+                    condition: TypedExpr::Error,
+                    then: typed_then,
+                    otherwise: typed_otherwise,
+                    condition_span,
+                }
+            },
+            TemplateExpr::Simple(expr) => TypedTemplateExpr::Simple(self.check_expr(expr, type_hint, reporter)),
+        }
     }
 
     fn check_expr(&mut self, expr: Expr<'source>, _type_hint: TypeHint, reporter: &mut TypeErrorReporter) -> TypedExpr {
@@ -439,92 +546,6 @@ impl<'source> TypeChecker {
 
         output_stack.swap_remove(0)
     }
-
-    /* fn check_expr(&mut self, expr: Expr<'source>, _type_hint: TypeHint, reporter: &mut TypeErrorReporter<'source>) -> TypedExpr {
-        match expr {
-            Expr::ConstantInt(value, span) => TypedExpr::ConstantInt(value, SpanWithFile::new(self.file_id, span)),
-            Expr::ConstantFloat(value, span) => TypedExpr::ConstantFloat(value, SpanWithFile::new(self.file_id, span)),
-            Expr::ConstantBoolean(value, span) => TypedExpr::ConstantBoolean(value, SpanWithFile::new(self.file_id, span)),
-            Expr::ConstantString(value, span) => TypedExpr::ConstantString(value, SpanWithFile::new(self.file_id, span)),
-            Expr::Identifier(name) => {
-                self.unimplemented(name.span(), "check identifier", reporter);
-                TypedExpr::Identifier(OwnedToken::from_token(&name), name::ERROR_TYPE_ID)
-            },
-            Expr::Replacement(span) => {
-                self.unimplemented(span, "check replacement expr", reporter);
-                TypedExpr::Error
-            },
-            Expr::UnaryOperator { operator, .. } => {
-                self.unimplemented(operator.span(), "check operator expr", reporter);
-                TypedExpr::Error
-            },
-            Expr::BinaryOperator { operator, .. } => {
-                self.unimplemented(operator.span(), "check operator expr", reporter);
-                TypedExpr::Error
-            },
-            Expr::FunctionCall { args_span, .. } => {
-                self.unimplemented(args_span, "check function call expr", reporter);
-                TypedExpr::Error
-            },
-            Expr::Member { name, .. } => {
-                self.unimplemented(name.span(), "check member expr", reporter);
-                TypedExpr::Error
-            },
-            Expr::Receiver { name, .. } => {
-                self.unimplemented(name.span(), "check receiver expr", reporter);
-                TypedExpr::Error
-            },
-            Expr::Index { operator_span, .. } => {
-                self.unimplemented(operator_span, "check index expr", reporter);
-                TypedExpr::Error
-            },
-            Expr::BuiltinFunctionCall { name, .. } => {
-                self.unimplemented(name.span(), "check built-in function call expr", reporter);
-                TypedExpr::Error
-            },
-            Expr::BuiltinType(part) => {
-                self.unimplemented(part.span(), "check type expr", reporter);
-                TypedExpr::Error
-            },
-            Expr::TypeCast { operator_span, .. } => {
-                self.unimplemented(operator_span, "check type cast expr", reporter);
-                TypedExpr::Error
-            },
-            Expr::Object { fields, merge_expr, span } => {
-                let typed_merge_expr = merge_expr.map(|(merge_expr, span)|
-                    (Box::new(self.check_expr(*merge_expr, TypeHint::new(name::OBJECT_TYPE_ID), reporter)), SpanWithFile::new(self.file_id, span)));
-
-                if let Some((typed_merge_expr, merge_expr_span)) = &typed_merge_expr {
-                    // TODO insert "convert type" AST node
-                    if !TypeHint::new(name::OBJECT_TYPE_ID).can_convert_from(&TypeHint::new(typed_merge_expr.type_id()), true, &self.names) {
-                        self.error(merge_expr_span.span(), TypeError::MismatchedTypes {
-                            expected: Cow::Borrowed("object"),
-                            found: Cow::Owned(self.names.type_name(typed_merge_expr.type_id()).to_owned()),
-                            message: Some(Cow::Borrowed("merge expression needs to be of type object")),
-                            additional_annotation: Some((SpanWithFile::new(self.file_id, span), None)),
-                        }, reporter);
-                    }
-                }
-
-                TypedExpr::Object {
-                    fields: fields.into_iter().map(|(key, field)|
-                        (OwnedToken::from_token(&key), self.check_expr(field, TypeHint::Any, reporter))
-                    ).collect(),
-                    merge_expr: typed_merge_expr,
-                    span,
-                }
-            },
-            Expr::Array { elements, span } => {
-                TypedExpr::Array {
-                    elements: elements.into_iter().map(|element|
-                        self.check_expr(element, TypeHint::Any, reporter)
-                    ).collect(),
-                    span,
-                }
-            },
-            Expr::Error => TypedExpr::Error,
-        }
-    } */
 
     fn error(&self, span: Span, message: TypeError<'source>, reporter: &mut TypeErrorReporter<'source>) {
         reporter.report(span, message, false);

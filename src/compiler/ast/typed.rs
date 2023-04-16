@@ -110,12 +110,23 @@ pub enum TypedTemplateExpr {
         span: Span,
     },
     If {
+        key_span: SpanWithFile,
         condition: TypedExpr,
         then: Box<TypedTemplateExpr>,
         otherwise: Box<TypedTemplateExpr>,
         condition_span: Span,
     },
     Simple(TypedExpr),
+}
+
+impl TypedTemplateExpr {
+    pub fn type_id(&self) -> TypeId {
+        match self {
+            TypedTemplateExpr::Block { expressions, .. } => expressions.last().type_id(),
+            TypedTemplateExpr::If { then, .. } => then.type_id(),
+            TypedTemplateExpr::Simple(expr) => expr.type_id(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

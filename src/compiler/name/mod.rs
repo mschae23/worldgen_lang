@@ -4,7 +4,7 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use non_empty_vec::{ne_vec, NonEmpty};
 use crate::compiler::ast::simple::{PrimitiveTypeKind, TypePart, TypeReferencePart};
-use crate::compiler::ast::typed::TypedDecl;
+use crate::compiler::ast::typed::{TypedConversionDecl, TypedDecl, TypedOptimizeDecl, TypedTemplateDecl};
 use crate::compiler::error::FileId;
 use crate::compiler::error::span::{Span, SpanWithFile};
 
@@ -241,6 +241,9 @@ pub const GLOBAL_IMPORT_ENVIRONMENT_ID: EnvironmentId = 1;
 pub struct TypeEnvironment {
     pub sub_environments: HashMap<String, EnvironmentId>,
     pub declarations: HashMap<String, TypedDecl>,
+    pub templates: Vec<TypedTemplateDecl>,
+    pub conversions: Vec<TypedConversionDecl>,
+    pub optimizations: Vec<TypedOptimizeDecl>,
 }
 
 impl TypeEnvironment {
@@ -248,7 +251,16 @@ impl TypeEnvironment {
         TypeEnvironment {
             sub_environments: HashMap::new(),
             declarations: HashMap::new(),
+            templates: Vec::new(),
+            conversions: Vec::new(),
+            optimizations: Vec::new(),
         }
+    }
+}
+
+impl Default for TypeEnvironment {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -334,6 +346,18 @@ impl NameResolution {
 
     pub fn insert_declaration(&mut self, name: String, decl: TypedDecl) {
         self.get_current_type_environment_mut().declarations.insert(name, decl);
+    }
+
+    pub fn insert_template_declaration(&mut self, decl: TypedTemplateDecl) {
+        self.get_current_type_environment_mut().templates.push(decl);
+    }
+
+    pub fn insert_conversion_declaration(&mut self, decl: TypedConversionDecl) {
+        self.get_current_type_environment_mut().conversions.push(decl);
+    }
+
+    pub fn insert_optimize_declaration(&mut self, decl: TypedOptimizeDecl) {
+        self.get_current_type_environment_mut().optimizations.push(decl);
     }
 
     pub fn close_type_environment(&mut self) {
