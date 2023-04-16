@@ -95,10 +95,16 @@ impl<'source> Diagnostic<MessageMarker> for TypeError<'source> {
 
 pub type TypeErrorReporter<'source> = ErrorReporter<MessageMarker, TypeError<'source>>;
 
-enum ProcessVariant<'source> {
+enum DeclProcessVariant<'source> {
     Decl(Decl<'source>),
     ModuleStart(&'source str),
     ModuleEnd,
+}
+
+enum ExprProcessVariant<'source> {
+    Expr(Expr<'source>),
+    Object { merge_expr: Option<Span>, fields: Vec<Token<'source>>, span: Span, },
+    Array { elements: usize, span: Span, },
 }
 
 pub struct TypeChecker {
@@ -123,17 +129,17 @@ impl<'source> TypeChecker {
         println_debug!("Name resolution state:\n{:#?}\n{:#?}", &self.types, &self.forward_decls);
 
         let mut process_stack = declarations.into_iter()
-            .map(ProcessVariant::Decl).rev().collect::<Vec<_>>();
+            .map(DeclProcessVariant::Decl).rev().collect::<Vec<_>>();
         let mut module_path = Vec::new();
 
         while let Some(process) = process_stack.pop() {
             match process {
-                ProcessVariant::Decl(decl) => match decl {
+                DeclProcessVariant::Decl(decl) => match decl {
                     Decl::Module { name, declarations, key_span: _key_span } => {
-                        process_stack.push(ProcessVariant::ModuleEnd);
+                        process_stack.push(DeclProcessVariant::ModuleEnd);
                         process_stack.extend(declarations.into_iter()
-                            .map(ProcessVariant::Decl).rev());
-                        process_stack.push(ProcessVariant::ModuleStart(name.source()));
+                            .map(DeclProcessVariant::Decl).rev());
+                        process_stack.push(DeclProcessVariant::ModuleStart(name.source()));
                     },
                     Decl::Class { key_span, interface, name, parameters, implements, class_repr, parameter_span } =>
                         self.check_class_decl(key_span, interface, name, parameters, implements, class_repr, parameter_span, &module_path, reporter),
@@ -149,11 +155,11 @@ impl<'source> TypeChecker {
                         self.check_variable(key_span, kind, name, expr, span, reporter),
                     Decl::Error => {},
                 },
-                ProcessVariant::ModuleStart(name) => {
+                DeclProcessVariant::ModuleStart(name) => {
                     self.names.open_type_environment(name.to_owned());
                     module_path.push(name);
                 },
-                ProcessVariant::ModuleEnd => {
+                DeclProcessVariant::ModuleEnd => {
                     self.names.close_type_environment();
                     module_path.pop();
                 },
@@ -302,7 +308,7 @@ impl<'source> TypeChecker {
         self.unimplemented(key_span.span(), "check template decl", reporter);
     }
 
-    fn check_include(&mut self, key_span: SpanWithFile, path: Token<'source>, process_stack: &mut Vec<ProcessVariant>, reporter: &mut TypeErrorReporter<'source>) {
+    fn check_include(&mut self, key_span: SpanWithFile, path: Token<'source>, process_stack: &mut Vec<DeclProcessVariant>, reporter: &mut TypeErrorReporter<'source>) {
         self.unimplemented(key_span.span(), "check include decl", reporter);
     }
 
@@ -314,7 +320,127 @@ impl<'source> TypeChecker {
         self.unimplemented(key_span.span(), "check variable decl", reporter);
     }
 
-    fn check_expr(&mut self, expr: Expr<'source>, _type_hint: TypeHint, reporter: &mut TypeErrorReporter<'source>) -> TypedExpr {
+    fn check_expr(&mut self, expr: Expr<'source>, _type_hint: TypeHint, reporter: &mut TypeErrorReporter) -> TypedExpr {
+        let mut input_stack = vec![ExprProcessVariant::Expr(expr)];
+        let mut output_stack = Vec::new();
+
+        while let Some(input) = input_stack.pop() {
+            match input {
+                ExprProcessVariant::Expr(expr) => {
+                    match expr {
+                        Expr::ConstantInt(value, span) => output_stack.push(TypedExpr::ConstantInt(value, SpanWithFile::new(self.file_id, span))),
+                        Expr::ConstantFloat(value, span) => output_stack.push(TypedExpr::ConstantFloat(value, SpanWithFile::new(self.file_id, span))),
+                        Expr::ConstantBoolean(value, span) => output_stack.push(TypedExpr::ConstantBoolean(value, SpanWithFile::new(self.file_id, span))),
+                        Expr::ConstantString(value, span) => output_stack.push(TypedExpr::ConstantString(value, SpanWithFile::new(self.file_id, span))),
+                        Expr::Identifier(name) => {
+                            self.unimplemented(name.span(), "check identifier", reporter);
+                            output_stack.push(TypedExpr::Identifier(OwnedToken::from_token(&name), name::ERROR_TYPE_ID));
+                        },
+                        Expr::Replacement(span) => {
+                            self.unimplemented(span, "check replacement expr", reporter);
+                            output_stack.push(TypedExpr::Error);
+                        },
+                        Expr::UnaryOperator { operator, .. } => {
+                            self.unimplemented(operator.span(), "check operator expr", reporter);
+                            output_stack.push(TypedExpr::Error);
+                        },
+                        Expr::BinaryOperator { operator, .. } => {
+                            self.unimplemented(operator.span(), "check operator expr", reporter);
+                            output_stack.push(TypedExpr::Error);
+                        },
+                        Expr::FunctionCall { args_span, .. } => {
+                            self.unimplemented(args_span, "check function call expr", reporter);
+                            output_stack.push(TypedExpr::Error);
+                        },
+                        Expr::Member { name, .. } => {
+                            self.unimplemented(name.span(), "check member expr", reporter);
+                            output_stack.push(TypedExpr::Error);
+                        },
+                        Expr::Receiver { name, .. } => {
+                            self.unimplemented(name.span(), "check receiver expr", reporter);
+                            output_stack.push(TypedExpr::Error);
+                        },
+                        Expr::Index { operator_span, .. } => {
+                            self.unimplemented(operator_span, "check index expr", reporter);
+                            output_stack.push(TypedExpr::Error);
+                        },
+                        Expr::BuiltinFunctionCall { name, .. } => {
+                            self.unimplemented(name.span(), "check built-in function call expr", reporter);
+                            output_stack.push(TypedExpr::Error);
+                        },
+                        Expr::BuiltinType(part) => {
+                            self.unimplemented(part.span(), "check type expr", reporter);
+                            output_stack.push(TypedExpr::Error);
+                        },
+                        Expr::TypeCast { operator_span, .. } => {
+                            self.unimplemented(operator_span, "check type cast expr", reporter);
+                            output_stack.push(TypedExpr::Error);
+                        },
+                        Expr::Object { fields, merge_expr, span } => {
+                            let (keys, exprs): (Vec<_>, Vec<_>) = fields.into_iter().unzip();
+
+                            input_stack.push(ExprProcessVariant::Object { merge_expr: merge_expr.as_ref().map(|(_, span)| *span), fields: keys, span, });
+                            input_stack.extend(exprs.into_iter().map(ExprProcessVariant::Expr));
+
+                            if let Some((merge_expr, _)) = merge_expr {
+                                input_stack.push(ExprProcessVariant::Expr(*merge_expr));
+                            }
+                        },
+                        Expr::Array { elements, span } => {
+                            input_stack.push(ExprProcessVariant::Array { elements: elements.len(), span, });
+                            input_stack.extend(elements.into_iter().map(ExprProcessVariant::Expr));
+                        },
+                        Expr::Error => output_stack.push(TypedExpr::Error),
+                    }
+                },
+                ExprProcessVariant::Object { merge_expr, fields, span } => {
+                    let merge_expr = merge_expr.map(|merge_expr_span|
+                        (output_stack.pop().expect("Internal compiler error: empty output stack"), merge_expr_span))
+                        .map(|(expr, span)| (Box::new(expr), SpanWithFile::new(self.file_id, span)));
+
+                    if let Some((typed_merge_expr, merge_expr_span)) = &merge_expr {
+                        // TODO insert "convert type" AST node
+                        if !TypeHint::new(name::OBJECT_TYPE_ID).can_convert_from(&TypeHint::new(typed_merge_expr.type_id()), true, &self.names) {
+                            self.error(merge_expr_span.span(), TypeError::MismatchedTypes {
+                                expected: Cow::Borrowed("object"),
+                                found: Cow::Owned(self.names.type_name(typed_merge_expr.type_id()).to_owned()),
+                                message: Some(Cow::Borrowed("merge expression needs to be of type object")),
+                                additional_annotation: Some((SpanWithFile::new(self.file_id, span), None)),
+                            }, reporter);
+                        }
+                    }
+
+                    let fields_len = fields.len();
+
+                    let fields = if !fields.is_empty() { fields.into_iter().map(|token| OwnedToken::from_token(&token)).zip(
+                        output_stack.drain((output_stack.len() - fields_len)..output_stack.len()).rev()).collect() } else { Vec::new() };
+
+                    output_stack.push(TypedExpr::Object {
+                        fields,
+                        merge_expr,
+                        span,
+                    });
+                },
+                ExprProcessVariant::Array { elements, span } => {
+                    let elements = if elements > 0 {
+                        output_stack.drain((output_stack.len() - elements)..output_stack.len()).rev().collect()
+                    } else { Vec::new() };
+
+                    output_stack.push(TypedExpr::Array {
+                        elements,
+                        span,
+                    });
+                },
+            }
+        }
+
+        assert!(input_stack.is_empty(), "Input stack is not empty after type check expr call: {}", input_stack.len());
+        assert_eq!(1, output_stack.len(), "Output stack does not have exactly one element after type check expr call: {}", output_stack.len());
+
+        output_stack.swap_remove(0)
+    }
+
+    /* fn check_expr(&mut self, expr: Expr<'source>, _type_hint: TypeHint, reporter: &mut TypeErrorReporter<'source>) -> TypedExpr {
         match expr {
             Expr::ConstantInt(value, span) => TypedExpr::ConstantInt(value, SpanWithFile::new(self.file_id, span)),
             Expr::ConstantFloat(value, span) => TypedExpr::ConstantFloat(value, SpanWithFile::new(self.file_id, span)),
@@ -398,7 +524,7 @@ impl<'source> TypeChecker {
             },
             Expr::Error => TypedExpr::Error,
         }
-    }
+    } */
 
     fn error(&self, span: Span, message: TypeError<'source>, reporter: &mut TypeErrorReporter<'source>) {
         reporter.report(span, message, false);
