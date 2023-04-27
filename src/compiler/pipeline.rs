@@ -13,9 +13,10 @@ use crate::Config;
 
 impl CompileState {
     #[allow(clippy::new_ret_no_self)]
-    pub fn new(config: Rc<Config>, source: &str, paths: Vec<(Rc<PathBuf>, Option<SpanWithFile>)>, file_id: FileId) -> ReadState {
+    pub fn new(config: Rc<Config>, source: &str, paths: Vec<(Rc<PathBuf>, Option<SpanWithFile>)>, file_id: FileId, type_id_offset: usize, decl_id_offset: usize) -> ReadState {
         ReadState {
             config, source,  paths, file_id,
+            type_id_offset, decl_id_offset,
         }
     }
 }
@@ -23,6 +24,7 @@ impl CompileState {
 pub struct ReadState<'source> {
     pub config: Rc<Config>,
     pub source: &'source str, pub paths: Vec<(Rc<PathBuf>, Option<SpanWithFile>)>, pub file_id: FileId,
+    pub type_id_offset: usize, pub decl_id_offset: usize,
 }
 
 impl<'source> ReadState<'source> {
@@ -31,6 +33,7 @@ impl<'source> ReadState<'source> {
 
         TokenizedState {
             config: self.config, paths: self.paths, file_id: self.file_id,
+            type_id_offset: self.type_id_offset, decl_id_offset: self.decl_id_offset,
             lexer,
         }
     }
@@ -38,6 +41,7 @@ impl<'source> ReadState<'source> {
 
 pub struct TokenizedState<'source> {
     pub config: Rc<Config>,  pub paths: Vec<(Rc<PathBuf>, Option<SpanWithFile>)>, pub file_id: FileId,
+    pub type_id_offset: usize, pub decl_id_offset: usize,
     pub lexer: Lexer<'source>,
 }
 
@@ -54,6 +58,7 @@ impl<'source> TokenizedState<'source> {
 
         ParsedState {
             config: self.config, paths: self.paths, file_id: self.file_id,
+            type_id_offset: self.type_id_offset, decl_id_offset: self.decl_id_offset,
             declarations,
         }
     }
@@ -61,6 +66,7 @@ impl<'source> TokenizedState<'source> {
 
 pub struct ParsedState<'source> {
     pub config: Rc<Config>, pub paths: Vec<(Rc<PathBuf>, Option<SpanWithFile>)>, pub file_id: FileId,
+    pub type_id_offset: usize, pub decl_id_offset: usize,
     pub declarations: Vec<Decl<'source>>,
 }
 
@@ -69,13 +75,14 @@ impl<'source> ParsedState<'source> {
         let mut reporter = reporting.create_for_stage(CompileStage::ForwardDeclarer,  self.file_id, ());
 
         let forward_declarer = ForwardDeclarer::new(Rc::clone(&self.config),
-            Rc::clone(&self.paths[self.paths.len() - 1].0), self.file_id);
+            Rc::clone(&self.paths[self.paths.len() - 1].0), self.file_id, self.type_id_offset, self.decl_id_offset);
         let result = forward_declarer.forward_declare(self.declarations, &mut reporter);
 
         reporting.submit(reporter);
 
         ForwardDeclaredState {
             config: self.config, paths: self.paths, file_id: self.file_id,
+            type_id_offset: self.type_id_offset, decl_id_offset: self.decl_id_offset,
             declarations: result.declarations,
             type_storage: result.types,
             forward_declaration_storage: result.storage,
@@ -85,6 +92,7 @@ impl<'source> ParsedState<'source> {
 
 pub struct ForwardDeclaredState<'source> {
     pub config: Rc<Config>, pub paths: Vec<(Rc<PathBuf>, Option<SpanWithFile>)>, pub file_id: FileId,
+    pub type_id_offset: usize, pub decl_id_offset: usize,
     pub declarations: Vec<ForwardDeclaredDecl<'source>>,
     pub type_storage: TypeStorage,
     pub forward_declaration_storage: ForwardDeclStorage,
@@ -94,16 +102,19 @@ impl<'source> ForwardDeclaredState<'source> {
     pub fn check_types(self, reporting: &mut ErrorReporting) -> TypeCheckedState {
         let mut reporter = reporting.create_for_stage(CompileStage::TypeChecker,  self.file_id, ());
 
-        // TODO pass paths
         let mut type_checker = TypeChecker::new(Rc::clone(&self.config),
-            self.paths, self.file_id, self.type_storage, self.forward_declaration_storage);
+            self.paths, self.file_id, self.type_id_offset, self.decl_id_offset,
+            self.type_storage.get_type_count(), self.forward_declaration_storage, reporting);
         type_checker.check_types(self.declarations, &mut reporter);
+
+        let paths = type_checker.paths;
+        let names = type_checker.names;
 
         reporting.submit(reporter);
 
         TypeCheckedState {
-            config: self.config, paths: type_checker.paths, _file_id: self.file_id,
-            names: type_checker.names,
+            config: self.config, paths, _file_id: self.file_id,
+            names,
         }
     }
 }

@@ -3,10 +3,13 @@ use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use non_empty_vec::{ne_vec, NonEmpty};
+use crate::compiler::ast::forward::ForwardDeclStorage;
 use crate::compiler::ast::simple::{PrimitiveTypeKind, TypePart, TypeReferencePart};
 use crate::compiler::ast::typed::{TypedConversionDecl, TypedDecl, TypedOptimizeDecl, TypedTemplateDecl};
 use crate::compiler::error::FileId;
 use crate::compiler::error::span::{Span, SpanWithFile};
+use crate::compiler::lexer::TokenType;
+use crate::println_debug;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PositionedName {
@@ -23,7 +26,8 @@ impl PositionedName {
     }
 }
 
-pub type TypeId = usize;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TypeId(pub(crate) usize);
 
 #[derive(Debug)]
 pub enum SimpleTypeInfo {
@@ -38,18 +42,19 @@ pub enum SimpleTypeInfo {
     Error,
 }
 
-pub const INT_TYPE_ID: TypeId = 0;
-pub const FLOAT_TYPE_ID: TypeId = 1;
-pub const BOOLEAN_TYPE_ID: TypeId = 2;
-pub const STRING_TYPE_ID: TypeId = 3;
-pub const OBJECT_TYPE_ID: TypeId = 4;
-pub const ARRAY_TYPE_ID: TypeId = 5;
-pub const TYPE_TYPE_ID: TypeId = 6;
-pub const ERROR_TYPE_ID: TypeId = 7;
+pub const INT_TYPE_ID: TypeId = TypeId(0);
+pub const FLOAT_TYPE_ID: TypeId = TypeId(1);
+pub const BOOLEAN_TYPE_ID: TypeId = TypeId(2);
+pub const STRING_TYPE_ID: TypeId = TypeId(3);
+pub const OBJECT_TYPE_ID: TypeId = TypeId(4);
+pub const ARRAY_TYPE_ID: TypeId = TypeId(5);
+pub const TYPE_TYPE_ID: TypeId = TypeId(6);
+pub const ERROR_TYPE_ID: TypeId = TypeId(7);
 pub const PRIMITIVE_TYPE_COUNT: usize = 8;
 
 #[derive(Debug)]
 pub struct TypeStorage {
+    type_id_offset: usize,
     types: Vec<SimpleTypeInfo>,
     top_level_module: TypeModule,
     type_path_lookup: Vec<Option<PathBuf>>,
@@ -57,8 +62,9 @@ pub struct TypeStorage {
 }
 
 impl TypeStorage {
-    pub fn new() -> Self {
+    pub fn new(type_id_offset: usize) -> Self {
         TypeStorage {
+            type_id_offset,
             types: vec![
                 SimpleTypeInfo::Primitive { kind: PrimitiveTypeKind::Int },
                 SimpleTypeInfo::Primitive { kind: PrimitiveTypeKind::Float },
@@ -76,8 +82,13 @@ impl TypeStorage {
     }
 
     #[inline]
+    fn next_type_id(&self) -> TypeId {
+        TypeId(self.types.len() + self.type_id_offset)
+    }
+
+    #[inline]
     pub fn get(&self, type_id: TypeId) -> Option<&SimpleTypeInfo> {
-        self.types.get(type_id)
+        self.types.get(type_id.0)
     }
 
     #[inline]
@@ -86,11 +97,11 @@ impl TypeStorage {
     }
 
     pub fn get_path(&self, type_id: TypeId) -> Option<&Path> {
-        if type_id < PRIMITIVE_TYPE_COUNT {
+        if type_id.0 < PRIMITIVE_TYPE_COUNT {
             None
         } else {
             use std::borrow::Borrow;
-            self.type_path_lookup.get(type_id - PRIMITIVE_TYPE_COUNT).and_then(|path| path.as_ref().map(PathBuf::borrow))
+            self.type_path_lookup.get(type_id.0 - PRIMITIVE_TYPE_COUNT - self.type_id_offset).and_then(|path| path.as_ref().map(PathBuf::borrow))
         }
     }
 
@@ -119,7 +130,7 @@ impl TypeStorage {
             }),
             TypePart::Name(name) => self.get_type_id_by_type_reference_part(prefix, name),
             TypePart::Template { args_span, return_type, .. } => {
-                let id = self.types.len();
+                let id = self.next_type_id();
                 self.types.push(SimpleTypeInfo::Template);
                 self.type_path_lookup.push(None);
                 self.type_span_lookup.push(Some(SpanWithFile::new(file_id, args_span.mix(return_type.span()))));
@@ -129,6 +140,19 @@ impl TypeStorage {
     }
 
     pub fn get_type_id_by_type_reference_part<'source>(&self, prefix: &[&str], part: &TypeReferencePart<'source>) -> Result<TypeId, (&'source str, Span)> {
+        if <NonZeroUsize as Into<usize>>::into(part.0.len()) == 1 {
+            match part.0.first().token_type() {
+                TokenType::Int => return Ok(INT_TYPE_ID),
+                TokenType::Float => return Ok(FLOAT_TYPE_ID),
+                TokenType::Boolean => return Ok(BOOLEAN_TYPE_ID),
+                TokenType::String => return Ok(STRING_TYPE_ID),
+                TokenType::Object => return Ok(OBJECT_TYPE_ID),
+                TokenType::Array => return Ok(ARRAY_TYPE_ID),
+                TokenType::Type => return Ok(TYPE_TYPE_ID),
+                _ => {},
+            }
+        }
+
         // Keep in sync with ForwardDeclStorage::find_decl_id
         let mut module_stack = ne_vec![&self.top_level_module];
 
@@ -174,17 +198,17 @@ impl TypeStorage {
     }
 
     pub fn get_span(&self, type_id: TypeId) -> Option<SpanWithFile> {
-        if type_id < PRIMITIVE_TYPE_COUNT {
+        if type_id.0 < PRIMITIVE_TYPE_COUNT {
             None
         } else {
-            self.type_span_lookup.get(type_id - PRIMITIVE_TYPE_COUNT).and_then(|o| o.as_ref()).copied()
+            self.type_span_lookup.get(type_id.0 - PRIMITIVE_TYPE_COUNT - self.type_id_offset).and_then(|o| o.as_ref()).copied()
         }
     }
 
     pub fn insert(&mut self, path: &[&str], span: Span, file_id: FileId, type_info: SimpleTypeInfo) -> Result<TypeId, TypeId> {
         assert!(!path.is_empty(), "Cannot insert a type with an empty path");
 
-        let id: TypeId = self.types.len();
+        let id: TypeId = self.next_type_id();
 
         let mut module = &mut self.top_level_module;
 
@@ -202,12 +226,6 @@ impl TypeStorage {
         self.type_span_lookup.push(Some(SpanWithFile::new(file_id, span)));
 
         Ok(id)
-    }
-}
-
-impl Default for TypeStorage {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -266,6 +284,8 @@ impl Default for TypeEnvironment {
 
 #[derive(Debug)]
 pub struct NameResolution {
+    pub forward_decls: ForwardDeclStorage,
+
     // Type environments always occupy 2 IDs and 2 slots in the stack:
     // a normal type environment and an import type environment
     type_environments: NonEmpty<TypeEnvironment>, // by ID
@@ -273,8 +293,9 @@ pub struct NameResolution {
 }
 
 impl NameResolution {
-    pub fn new() -> Self {
+    pub fn new(forward_decls: ForwardDeclStorage) -> Self {
         NameResolution {
+            forward_decls,
             type_environments: ne_vec![TypeEnvironment::new(), TypeEnvironment::new()],
             type_environment_stack: NonEmpty::new(GLOBAL_ENVIRONMENT_ID),
         }
@@ -360,6 +381,12 @@ impl NameResolution {
         self.get_current_type_environment_mut().optimizations.push(decl);
     }
 
+    pub fn include(&mut self, other: NameResolution) {
+        self.forward_decls.include(other.forward_decls);
+
+        println_debug!("TODO: include other names");
+    }
+
     pub fn close_type_environment(&mut self) {
         // This assert is actually redundant, because type_environment_stack is a NonEmpty,
         // but it's probably better to do it anyway, and it also has a better panic message.
@@ -380,11 +407,5 @@ impl NameResolution {
             ERROR_TYPE_ID => "error",
             _ => "unknown",
         }
-    }
-}
-
-impl Default for NameResolution {
-    fn default() -> Self {
-        NameResolution::new()
     }
 }

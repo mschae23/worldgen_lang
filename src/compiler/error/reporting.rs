@@ -156,15 +156,15 @@ impl ErrorReporting {
         }
     }
 
-    pub fn get_file_id(&mut self, path: Rc<PathBuf>, source: String) -> Result<FileId, std::io::Error> {
+    // path should already be canonicalized
+    pub fn get_file_id(&mut self, path: Rc<PathBuf>, source: String) -> FileId {
         let next_id: FileId = self.files.len() as u32;
-        let canonicalized = Rc::new(path.canonicalize()?);
 
-        Ok(*self.file_ids.entry(Rc::clone(&canonicalized)).or_insert_with(|| {
-            self.files.push((source, canonicalized));
+        *self.file_ids.entry(Rc::clone(&path)).or_insert_with(|| {
+            self.files.push((source, path));
 
             next_id
-        }))
+        })
     }
 
     pub fn create_for_stage<D, M>(&self, stage: CompileStage, file_id: FileId, marker: D) -> ErrorReporter<D, M> {

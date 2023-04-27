@@ -36,7 +36,7 @@ pub fn run() -> Result<(), std::io::Error> {
     let source = std::fs::read_to_string(input.as_path())?;
     let _pipeline = CompileState::new(Rc::clone(&config), &source,
         vec![(Rc::clone(&input), None)],
-        reporting.get_file_id(Rc::clone(&input), std::fs::read_to_string(&*input)?)?)
+        reporting.get_file_id(Rc::clone(&input), std::fs::read_to_string(&*input)?), 0, 0)
         .tokenize()
         .parse(&mut reporting)
         .forward_declare(&mut reporting)

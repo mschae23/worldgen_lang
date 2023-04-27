@@ -4,12 +4,16 @@ use crate::compiler::ast::simple::{ClassReprPart, Expr, TemplateExpr, TemplateKi
 use crate::compiler::error::FileId;
 use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::compiler::lexer::Token;
-use crate::compiler::name::{PRIMITIVE_TYPE_COUNT, TypeId, TypeStorage};
+use crate::compiler::name;
+use crate::compiler::name::{TypeId, TypeStorage};
+use crate::println_debug;
 
-pub type DeclId = usize;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeclId(usize);
 
 #[derive(Debug)]
 pub struct ForwardDeclStorage {
+    type_id_offset: usize, decl_id_offset: usize,
     declarations: Vec<ForwardDecl>,
     declaration_spans: Vec<SpanWithFile>,
     declaration_has_duplicate: Vec<bool>,
@@ -19,11 +23,12 @@ pub struct ForwardDeclStorage {
 }
 
 impl ForwardDeclStorage {
-    pub fn new(type_count: usize) -> Self {
+    pub fn new(type_id_offset: usize, decl_id_offset: usize, type_count: usize) -> Self {
         let mut type_to_decl_mapping = vec![TypeToDeclMapping::Unknown; type_count];
-        type_to_decl_mapping[0..PRIMITIVE_TYPE_COUNT].fill(TypeToDeclMapping::Primitive);
+        type_to_decl_mapping[0..name::PRIMITIVE_TYPE_COUNT].fill(TypeToDeclMapping::Primitive);
 
         ForwardDeclStorage {
+            type_id_offset, decl_id_offset,
             declarations: Vec::new(),
             declaration_spans: Vec::new(),
             declaration_has_duplicate: Vec::new(),
@@ -32,20 +37,39 @@ impl ForwardDeclStorage {
         }
     }
 
+    #[inline]
+    fn next_decl_id(&self) -> DeclId {
+        DeclId(self.declarations.len() + self.decl_id_offset)
+    }
+
+    #[inline]
+    fn type_id_to_array_index(&self, id: TypeId) -> usize {
+        if id.0 < name::PRIMITIVE_TYPE_COUNT {
+            id.0
+        } else {
+            id.0 - self.type_id_offset
+        }
+    }
+
+    #[inline]
+    pub fn get_decl_count(&self) -> usize {
+        self.declarations.len()
+    }
+
     pub fn declarations(&self) -> &[ForwardDecl] {
         &self.declarations
     }
 
     pub fn get_decl_by_id(&self, id: DeclId) -> &ForwardDecl {
-        &self.declarations[id]
+        &self.declarations[id.0 - self.decl_id_offset]
     }
 
     pub fn get_span_by_id(&self, id: DeclId) -> SpanWithFile {
-        self.declaration_spans[id]
+        self.declaration_spans[id.0 - self.decl_id_offset]
     }
 
     pub fn get_decl_id_from_type_id(&self, id: TypeId) -> Option<DeclId> {
-        if let TypeToDeclMapping::Forward(decl_id) = self.type_to_decl_mapping[id] {
+        if let TypeToDeclMapping::Forward(decl_id) = self.type_to_decl_mapping[self.type_id_to_array_index(id)] {
             Some(decl_id)
         } else {
             None
@@ -57,7 +81,7 @@ impl ForwardDeclStorage {
     }
 
     pub fn has_duplicate(&self, id: DeclId) -> bool {
-        self.declaration_has_duplicate[id]
+        self.declaration_has_duplicate[id.0 - self.decl_id_offset]
     }
 
     pub fn top_level_module(&self) -> &ForwardModule {
@@ -87,7 +111,7 @@ impl ForwardDeclStorage {
     pub fn insert(&mut self, path: &[&str], decl: ForwardDecl, file_id: FileId, span: Span) -> DeclId {
         assert!(!path.is_empty(), "Cannot insert forward declaration without a name");
 
-        let id: DeclId = self.declarations.len();
+        let id: DeclId = self.next_decl_id();
         self.declarations.push(decl);
         self.declaration_spans.push(SpanWithFile::new(file_id, span));
         self.declaration_has_duplicate.push(false);
@@ -106,11 +130,12 @@ impl ForwardDeclStorage {
     }
 
     pub fn mark_duplicate(&mut self, original_id: DeclId) {
-        self.declaration_has_duplicate[original_id] = true;
+        self.declaration_has_duplicate[original_id.0 - self.decl_id_offset] = true;
     }
 
     pub fn insert_type_to_decl_mapping(&mut self, type_id: TypeId, decl_id: DeclId) {
-        self.type_to_decl_mapping[type_id] = TypeToDeclMapping::Forward(decl_id);
+        let index = self.type_id_to_array_index(type_id);
+        self.type_to_decl_mapping[index] = TypeToDeclMapping::Forward(decl_id);
     }
 
     pub fn find_decl_direct<'a, F: Fn(&str, &ForwardDecl) -> bool>(&self, module_path: &[(&'a str, Span)], predicate: F, name_debug_info: (&'a str, Span)) -> Result<&ForwardDecl, (&'a str, Span)> {
@@ -118,7 +143,7 @@ impl ForwardDeclStorage {
 
         for (name, id) in module.declarations.iter() {
             let id = *id;
-            let decl = &self.declarations[id];
+            let decl = &self.declarations[id.0 - self.decl_id_offset];
 
             if predicate(name, decl) {
                 return Ok(decl);
@@ -156,7 +181,7 @@ impl ForwardDeclStorage {
 
         for (name, id) in current.declarations.iter() {
             let id = *id;
-            let decl = &self.declarations[id];
+            let decl = &self.declarations[id.0 - self.decl_id_offset];
 
             if predicate(name, decl) {
                 return Some(id);
@@ -198,7 +223,7 @@ impl ForwardDeclStorage {
 
             for (name, id) in current.declarations.iter() {
                 let id = *id;
-                let decl = &self.declarations[id];
+                let decl = &self.declarations[id.0 - self.decl_id_offset];
 
                 if predicate(name, decl) {
                     return Ok(id);
@@ -207,6 +232,10 @@ impl ForwardDeclStorage {
         }
 
         Err(span)
+    }
+
+    pub fn include(&mut self, other: ForwardDeclStorage) {
+        println_debug!("TODO: include other forward decls");
     }
 
     pub fn assert_complete_type_mappings(&self) {

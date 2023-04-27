@@ -8,6 +8,8 @@ module df {
     class mul(argument1: density_function, argument2: density_function): density_function("minecraft:mul");
     // ...
 
+    include "included.densityfunction";
+
     // Operators for addition and multiplication
     template +(left: density_function, right: density_function): add { add(left, right) }
     template *(left: density_function, right: density_function): mul { mul(left, right) }

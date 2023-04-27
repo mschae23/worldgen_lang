@@ -85,19 +85,21 @@ pub type DeclErrorReporter<'source> = ErrorReporter<MessageMarker, DeclError<'so
 pub struct ForwardDeclarer {
     _config: Rc<Config>,
     _path: Rc<PathBuf>, file_id: FileId,
+    type_id_offset: usize, decl_id_offset: usize,
 }
 
 impl ForwardDeclarer {
-    pub fn new(config: Rc<Config>, path: Rc<PathBuf>, file_id: FileId) -> Self {
+    pub fn new(config: Rc<Config>, path: Rc<PathBuf>, file_id: FileId, type_id_offset: usize, decl_id_offset: usize) -> Self {
         ForwardDeclarer {
             _config: config, _path: path, file_id,
+            type_id_offset, decl_id_offset,
         }
     }
 
     pub fn forward_declare<'source>(self, declarations: Vec<Decl<'source>>, reporter: &mut DeclErrorReporter<'source>) -> ForwardDeclareResult<'source> {
         let mut types = self.declare_types(&declarations, reporter);
 
-        let mut storage = ForwardDeclStorage::new(types.get_type_count());
+        let mut storage = ForwardDeclStorage::new(self.type_id_offset, self.decl_id_offset, types.get_type_count());
         let declarations = self.declare_forward_decls(&mut storage, &mut types, declarations, reporter);
 
         storage.assert_complete_type_mappings();
@@ -112,7 +114,7 @@ impl ForwardDeclarer {
             ModuleEnd,
         }
 
-        let mut storage = TypeStorage::new();
+        let mut storage = TypeStorage::new(self.type_id_offset);
         let mut input_stack = decls.iter().map(ProcessVariant::Decl).rev().collect::<Vec<_>>();
         let mut path = Vec::new();
 
