@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::rc::Rc;
-use crate::compiler::ast::forward::ForwardDeclStorage;
+use crate::compiler::ast::forward::{ForwardDeclaredDecl, ForwardDeclStorage};
 use crate::compiler::ast::simple::Decl;
 use crate::compiler::error::{CompileStage, ErrorReporting, FileId};
 use crate::compiler::forward_declare::ForwardDeclarer;
@@ -84,7 +84,7 @@ impl<'source> ParsedState<'source> {
 
 pub struct ForwardDeclaredState<'source> {
     pub config: Rc<Config>, input: Rc<PathBuf>, file_id: FileId,
-    pub declarations: Vec<Decl<'source>>,
+    pub declarations: Vec<ForwardDeclaredDecl<'source>>,
     pub type_storage: TypeStorage,
     pub forward_declaration_storage: ForwardDeclStorage,
 }

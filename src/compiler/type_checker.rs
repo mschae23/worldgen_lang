@@ -2,14 +2,14 @@ use std::borrow::Cow;
 use std::path::PathBuf;
 use std::rc::Rc;
 use non_empty_vec::NonEmpty;
-use crate::compiler::ast::forward::{ForwardDecl, ForwardDeclStorage};
-use crate::compiler::ast::simple::{ClassImplementsPart, ClassReprPart, Decl, Expr, ParameterPart, TemplateExpr, TemplateKind, TypePart, VariableKind};
+use crate::compiler::ast::forward::{DeclId, ForwardDecl, ForwardDeclaredClassImplementsPart, ForwardDeclaredDecl, ForwardDeclaredParameterPart, ForwardDeclStorage};
+use crate::compiler::ast::simple::{ClassReprPart, Expr, TemplateExpr, TemplateKind, VariableKind};
 use crate::compiler::ast::typed::{OwnedToken, TypedClassImplementsPart, TypedClassReprPart, TypedDecl, TypedDefinedClassReprPart, TypedExpr, TypedParameterPart, TypedTemplateDecl, TypedTemplateExpr};
 use crate::compiler::error::{Diagnostic, DiagnosticContext, ErrorReporter, FileId, NoteKind, Severity};
 use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::compiler::lexer::Token;
 use crate::compiler::name;
-use crate::compiler::name::{NameResolution, TypeStorage};
+use crate::compiler::name::{NameResolution, TypeId, TypeStorage};
 use crate::compiler::type_checker::hint::TypeHint;
 use crate::Config;
 #[allow(unused)]
@@ -96,7 +96,7 @@ impl<'source> Diagnostic<MessageMarker> for TypeError<'source> {
 pub type TypeErrorReporter<'source> = ErrorReporter<MessageMarker, TypeError<'source>>;
 
 enum DeclProcessVariant<'source> {
-    Decl(Decl<'source>),
+    Decl(ForwardDeclaredDecl<'source>),
     ModuleStart(&'source str),
     ModuleEnd,
 }
@@ -125,7 +125,7 @@ impl<'source> TypeChecker {
         }
     }
 
-    pub fn check_types(mut self, declarations: Vec<Decl<'source>>, reporter: &mut TypeErrorReporter<'source>) {
+    pub fn check_types(mut self, declarations: Vec<ForwardDeclaredDecl<'source>>, reporter: &mut TypeErrorReporter<'source>) {
         println_debug!("Name resolution state:\n{:#?}\n{:#?}", &self.types, &self.forward_decls);
 
         let mut process_stack = declarations.into_iter()
@@ -135,25 +135,25 @@ impl<'source> TypeChecker {
         while let Some(process) = process_stack.pop() {
             match process {
                 DeclProcessVariant::Decl(decl) => match decl {
-                    Decl::Module { name, declarations, key_span: _key_span } => {
+                    ForwardDeclaredDecl::Module { name, declarations, key_span: _key_span } => {
                         process_stack.push(DeclProcessVariant::ModuleEnd);
                         process_stack.extend(declarations.into_iter()
                             .map(DeclProcessVariant::Decl).rev());
                         process_stack.push(DeclProcessVariant::ModuleStart(name.source()));
                     },
-                    Decl::Class { key_span, interface, name, parameters, implements, class_repr, parameter_span } =>
-                        self.check_class_decl(key_span, interface, name, parameters, implements, class_repr, parameter_span, &module_path, reporter),
-                    Decl::TypeAlias { key_span, name, to, condition } =>
-                        self.check_type_alias_decl(key_span, name, to, condition, &module_path, reporter),
-                    Decl::Template { key_span, kind, parameters, return_type, expr, parameter_span, expr_span } =>
-                        self.check_template_decl(key_span, kind, parameters, return_type, expr, parameter_span, expr_span, &module_path, reporter),
-                    Decl::Include { key_span, path } =>
+                    ForwardDeclaredDecl::Class { key_span, decl_id, interface, name, parameters, implements, class_repr, parameter_span } =>
+                        self.check_class_decl(key_span, decl_id, interface, name, parameters, implements, class_repr, parameter_span, &module_path, reporter),
+                    ForwardDeclaredDecl::TypeAlias { key_span, decl_id, name, to, condition, to_span } =>
+                        self.check_type_alias_decl(key_span, decl_id, name, to, condition, to_span, &module_path, reporter),
+                    ForwardDeclaredDecl::Template { key_span, decl_id, kind, parameters, return_type, expr, parameter_span, return_type_span, expr_span } =>
+                        self.check_template_decl(key_span, decl_id, kind, parameters, return_type, expr, parameter_span, return_type_span, expr_span, &module_path, reporter),
+                    ForwardDeclaredDecl::Include { key_span, path } =>
                         self.check_include(key_span, path, &mut process_stack, reporter),
-                    Decl::Import { key_span, path, selector, span } =>
+                    ForwardDeclaredDecl::Import { key_span, path, selector, span } =>
                         self.check_import(key_span, path, selector, span, reporter),
-                    Decl::Variable { key_span, kind, name, expr, span } =>
-                        self.check_variable(key_span, kind, name, expr, span, reporter),
-                    Decl::Error => {},
+                    ForwardDeclaredDecl::Variable { key_span, decl_id, kind, name, expr, span } =>
+                        self.check_variable(key_span, decl_id, kind, name, expr, span, reporter),
+                    ForwardDeclaredDecl::Error => {},
                 },
                 DeclProcessVariant::ModuleStart(name) => {
                     self.names.open_type_environment(name.to_owned());
@@ -167,32 +167,26 @@ impl<'source> TypeChecker {
         }
     }
 
-    fn check_class_decl(&mut self, _key_span: SpanWithFile, interface: bool, name: Token<'source>, parameters: Vec<ParameterPart<'source>>, implements: Option<ClassImplementsPart<'source>>, class_repr: Option<ClassReprPart<'source>>, parameter_span: Span, module_path: &[&'source str], reporter: &mut TypeErrorReporter<'source>) {
-        let forward_decl_id = self.forward_decls.find_decl_id_for_duplicate(module_path, &[], |name2, decl|
-            !matches!(decl, ForwardDecl::Template(_)) && name.source() == name2)
-            .expect("Internal compiler error: Missing forward declaration for class");
-
-        if self.forward_decls.has_duplicate(forward_decl_id) {
+    fn check_class_decl(&mut self, _key_span: SpanWithFile, decl_id: DeclId, interface: bool, name: Token<'source>, parameters: Vec<ForwardDeclaredParameterPart<'source>>, implements: Option<ForwardDeclaredClassImplementsPart<'source>>, class_repr: Option<ClassReprPart<'source>>, parameter_span: Span, _module_path: &[&'source str], reporter: &mut TypeErrorReporter<'source>) {
+        if self.forward_decls.has_duplicate(decl_id) {
             return;
         }
 
-        let forward_decl = self.forward_decls.get_decl_by_id(forward_decl_id);
+        let forward_decl = self.forward_decls.get_decl_by_id(decl_id);
 
         match forward_decl {
             ForwardDecl::Class(decl) => {
-                let implements_type = decl.implements;
-
                 let typed_parameters = parameters.into_iter().enumerate().map(|(i, part)| TypedParameterPart {
                     name: OwnedToken::from_token(&part.name),
                     parameter_type: decl.parameters[i],
                 }).collect::<Vec<_>>();
 
-                let typed_implements = implements.zip(implements_type).map(|(part, implements_type)| {
-                    let parameter_types = self.forward_decls.get_decl_by_type_id(implements_type).and_then(|referenced_decl| {
+                let typed_implements = implements.map(|implements| {
+                    let parameter_types = self.forward_decls.get_decl_by_type_id(implements.implements_id).and_then(|referenced_decl| {
                         match referenced_decl {
                             ForwardDecl::Class(decl) => Some(decl.parameters.clone()),
                             _ => {
-                                self.error(part.span, TypeError::ImplementsNotClass { name: part.name.0.last().source(),
+                                self.error(implements.span, TypeError::ImplementsNotClass { name: implements.name.0.last().source(),
                                     actual_kind: referenced_decl.kind_with_indefinite_article(),
                                     defined_at: referenced_decl.span(),
                                 }, reporter);
@@ -202,13 +196,13 @@ impl<'source> TypeChecker {
                     });
 
                     TypedClassImplementsPart {
-                        reference: implements_type,
-                        parameters: part.parameters.into_iter().enumerate()
+                        reference: implements.implements_id,
+                        parameters: implements.parameters.into_iter().enumerate()
                             .map(|(i, parameter)| self.check_expr(parameter,
                                 parameter_types.as_ref().map(|types| TypeHint::Options(NonEmpty::new(types[i]))).unwrap_or(TypeHint::Any),
                                     reporter)).collect(),
-                        span: part.span,
-                        parameter_span: part.parameter_span,
+                        span: implements.span,
+                        parameter_span: implements.parameter_span,
                         file_id: self.file_id,
                     }
                 });
@@ -218,7 +212,7 @@ impl<'source> TypeChecker {
                     span: part.span,
                     file_id: self.file_id,
                 })).unwrap_or_else(|| {
-                    let parent = implements_type.and_then(|id| self.forward_decls.get_decl_id_from_type_id(id));
+                    let parent = typed_implements.as_ref().and_then(|implements| self.forward_decls.get_decl_id_from_type_id(implements.reference));
                     let mut parent = parent.and_then(|parent| match self.forward_decls.get_decl_by_id(parent) {
                         ForwardDecl::Class(decl) => Some((parent, decl)),
                         _ => None,
@@ -264,21 +258,15 @@ impl<'source> TypeChecker {
         }
     }
 
-    fn check_type_alias_decl(&mut self, key_span: SpanWithFile, name: Token<'source>, _to: TypePart<'source>, condition: Option<(Expr<'source>, Span)>, module_path: &[&'source str], reporter: &mut TypeErrorReporter<'source>) {
-        let forward_decl_id = self.forward_decls.find_decl_id_for_duplicate(module_path, &[], |name2, decl|
-            !matches!(decl, ForwardDecl::Template(_)) && name.source() == name2)
-            .expect("Internal compiler error: Missing forward declaration for type alias");
-
-        if self.forward_decls.has_duplicate(forward_decl_id) {
+    fn check_type_alias_decl(&mut self, key_span: SpanWithFile, decl_id: DeclId, name: Token<'source>, to: TypeId, condition: Option<(Expr<'source>, Span)>, _to_span: SpanWithFile, _module_path: &[&'source str], reporter: &mut TypeErrorReporter<'source>) {
+        if self.forward_decls.has_duplicate(decl_id) {
             return;
         }
 
-        let forward_decl = self.forward_decls.get_decl_by_id(forward_decl_id);
+        let forward_decl = self.forward_decls.get_decl_by_id(decl_id);
 
         match forward_decl {
-            ForwardDecl::TypeAlias(decl) => {
-                let to = decl.reference;
-
+            ForwardDecl::TypeAlias(_decl) => {
                 let typed_condition = condition.map(|(condition, condition_span)| {
                     let typed = self.check_expr(condition, TypeHint::new(name::BOOLEAN_TYPE_ID), reporter);
 
@@ -304,44 +292,12 @@ impl<'source> TypeChecker {
         }
     }
 
-    fn check_template_decl(&mut self, key_span: SpanWithFile, kind: TemplateKind<'source>, parameters: Vec<ParameterPart<'source>>, return_type_part: TypePart<'source>, expr: TemplateExpr<'source>, parameter_span: Span, expr_span: Span, module_path: &[&'source str], reporter: &mut TypeErrorReporter<'source>) {
-        let parameter_types = parameters.iter()
-            .map(|part| self.types.get_type_id_by_type_part(module_path, &part.parameter_type, self.file_id).unwrap_or(name::ERROR_TYPE_ID)).collect::<Vec<_>>();
-        let return_type = self.types.get_type_id_by_type_part(module_path, &return_type_part, self.file_id).unwrap_or(name::ERROR_TYPE_ID);
-        let optimize_on_type = match &kind {
-            TemplateKind::Optimize { on } => Some(self.types.get_type_id_by_type_part(module_path, on, self.file_id).unwrap_or(name::ERROR_TYPE_ID)),
-            _ => None,
-        };
-
-        if return_type == name::ERROR_TYPE_ID || parameter_types.contains(&name::ERROR_TYPE_ID) || optimize_on_type.map(|id| id == name::ERROR_TYPE_ID).unwrap_or(false) {
-            // Any errors here should already have been reported by forward declaration
-            println_debug!("Can't resolve types for parameter or return of template");
+    fn check_template_decl(&mut self, key_span: SpanWithFile, decl_id: DeclId, kind: TemplateKind<'source>, parameters: Vec<ForwardDeclaredParameterPart<'source>>, return_type: TypeId, expr: TemplateExpr<'source>, parameter_span: Span, return_type_span: Span, expr_span: Span, _module_path: &[&'source str], reporter: &mut TypeErrorReporter<'source>) {
+        if self.forward_decls.has_duplicate(decl_id) {
             return;
         }
 
-        let forward_decl_id = self.forward_decls.find_decl_id_for_duplicate(module_path, &[], |name2, decl| {
-            match decl {
-                ForwardDecl::Template(decl) => match &kind {
-                    TemplateKind::Template { name, .. } => name.source() == name2 && parameter_types == decl.parameters && return_type == decl.return_type,
-                    _ => false,
-                },
-                ForwardDecl::Conversion(decl) => match &kind {
-                    TemplateKind::Conversion { .. } => parameter_types.len() == 1 && parameter_types[0] == decl.from && return_type == decl.to,
-                    _ => false,
-                },
-                ForwardDecl::Optimize(decl) => if let Some(on) = optimize_on_type {
-                    on == decl.on && parameter_types == decl.parameters && return_type == decl.return_type
-                } else { false },
-                _ => false,
-            }
-        })
-            .expect("Internal compiler error: Missing forward declaration for template");
-
-        if self.forward_decls.has_duplicate(forward_decl_id) {
-            return;
-        }
-
-        let forward_decl = self.forward_decls.get_decl_by_id(forward_decl_id);
+        let forward_decl = self.forward_decls.get_decl_by_id(decl_id);
 
         match kind {
             TemplateKind::Template { name, .. } => match forward_decl {
@@ -355,7 +311,7 @@ impl<'source> TypeChecker {
                             expected: Cow::Owned(self.names.type_name(return_type).to_owned()),
                             found: Cow::Owned(self.names.type_name(typed_expr.type_id()).to_owned()),
                             message: Some(Cow::Borrowed("template expression must have the template's return type")),
-                            additional_annotation: Some((SpanWithFile::new(self.file_id, return_type_part.span()), Some(Cow::Borrowed("return type defined here")))),
+                            additional_annotation: Some((SpanWithFile::new(self.file_id, return_type_span), Some(Cow::Borrowed("return type defined here")))),
                         }, reporter);
                     }
 
@@ -382,7 +338,7 @@ impl<'source> TypeChecker {
         self.unimplemented(key_span.span(), "check import decl", reporter);
     }
 
-    fn check_variable(&mut self, key_span: SpanWithFile, kind: VariableKind, name: Token<'source>, expr: Expr<'source>, span: Span, reporter: &mut TypeErrorReporter<'source>) {
+    fn check_variable(&mut self, key_span: SpanWithFile, decl_id: DeclId, kind: VariableKind, name: Token<'source>, expr: Expr<'source>, span: Span, reporter: &mut TypeErrorReporter<'source>) {
         self.unimplemented(key_span.span(), "check variable decl", reporter);
     }
 

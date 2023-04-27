@@ -1,8 +1,9 @@
 use std::collections::HashMap;
-use non_empty_vec::ne_vec;
-use crate::compiler::ast::simple::{Decl, VariableKind};
+use non_empty_vec::{ne_vec, NonEmpty};
+use crate::compiler::ast::simple::{ClassReprPart, Expr, TemplateExpr, TemplateKind, TypeReferencePart, VariableKind};
 use crate::compiler::error::FileId;
 use crate::compiler::error::span::{Span, SpanWithFile};
+use crate::compiler::lexer::Token;
 use crate::compiler::name::{PRIMITIVE_TYPE_COUNT, TypeId, TypeStorage};
 
 pub type DeclId = usize;
@@ -218,11 +219,11 @@ impl ForwardDeclStorage {
 pub struct ForwardDeclareResult<'source> {
     pub types: TypeStorage,
     pub storage: ForwardDeclStorage,
-    pub declarations: Vec<Decl<'source>>,
+    pub declarations: Vec<ForwardDeclaredDecl<'source>>,
 }
 
 impl<'source> ForwardDeclareResult<'source> {
-    pub fn new(types: TypeStorage, storage: ForwardDeclStorage, declarations: Vec<Decl<'source>>) -> Self {
+    pub fn new(types: TypeStorage, storage: ForwardDeclStorage, declarations: Vec<ForwardDeclaredDecl<'source>>) -> Self {
         ForwardDeclareResult {
             types, storage, declarations,
         }
@@ -358,4 +359,71 @@ pub enum TypeToDeclMapping {
     Unknown,
     Primitive,
     Forward(DeclId),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForwardDeclaredParameterPart<'source> {
+    pub name: Token<'source>,
+    pub parameter_type: TypeId,
+    pub type_span: SpanWithFile,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForwardDeclaredClassImplementsPart<'source> {
+    pub name: TypeReferencePart<'source>,
+    pub implements_id: TypeId,
+    pub parameters: Vec<Expr<'source>>,
+    pub span: Span, pub parameter_span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ForwardDeclaredDecl<'source> {
+    Module {
+        key_span: SpanWithFile,
+        name: Token<'source>,
+        declarations: Vec<ForwardDeclaredDecl<'source>>,
+    },
+    Class {
+        key_span: SpanWithFile, decl_id: DeclId,
+        interface: bool,
+        name: Token<'source>,
+        parameters: Vec<ForwardDeclaredParameterPart<'source>>,
+        implements: Option<ForwardDeclaredClassImplementsPart<'source>>,
+        class_repr: Option<ClassReprPart<'source>>,
+        parameter_span: Span,
+    },
+    TypeAlias {
+        key_span: SpanWithFile, decl_id: DeclId,
+        name: Token<'source>,
+        to: TypeId,
+        condition: Option<(Expr<'source>, Span)>,
+        to_span: SpanWithFile,
+    },
+    Template {
+        key_span: SpanWithFile, decl_id: DeclId,
+        kind: TemplateKind<'source>,
+        parameters: Vec<ForwardDeclaredParameterPart<'source>>,
+        return_type: TypeId,
+        expr: TemplateExpr<'source>,
+        parameter_span: Span, return_type_span: Span, expr_span: Span,
+    },
+    Include {
+        key_span: SpanWithFile,
+        path: Token<'source>,
+    },
+    Import {
+        key_span: SpanWithFile,
+        path: NonEmpty<Token<'source>>,
+        selector: Option<NonEmpty<Token<'source>>>, // None represents star import (import something::*)
+        span: Span, // only path and selector, doesn't include the "import" keyword or semicolon
+    },
+    Variable {
+        key_span: SpanWithFile, decl_id: DeclId,
+        kind: VariableKind,
+        name: Token<'source>,
+        expr: Expr<'source>,
+        span: Span,
+    },
+
+    Error,
 }
