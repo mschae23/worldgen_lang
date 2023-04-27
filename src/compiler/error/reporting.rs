@@ -138,7 +138,7 @@ impl DiagnosticData {
 }
 
 pub struct ErrorReporting {
-    config: Rc<Config>, working_dir: PathBuf,
+    config: Rc<Config>, working_dir: Rc<PathBuf>,
     file_ids: HashMap<Rc<PathBuf>, FileId>,
     files: Vec<(String, Rc<PathBuf>)>,
     diagnostics: Vec<DiagnosticData>,
@@ -149,7 +149,7 @@ pub struct ErrorReporting {
 impl ErrorReporting {
     pub fn new(config: Rc<Config>, working_dir: PathBuf) -> Self {
         ErrorReporting {
-            config, working_dir,
+            config, working_dir: Rc::new(working_dir),
             file_ids: HashMap::new(), files: Vec::new(),
             diagnostics: Vec::new(),
             diagnostic_counts: [0; SEVERITY_COUNT], highest_severity: None,
@@ -168,7 +168,7 @@ impl ErrorReporting {
     }
 
     pub fn create_for_stage<D, M>(&self, stage: CompileStage, file_id: FileId, marker: D) -> ErrorReporter<D, M> {
-        ErrorReporter::new(stage, file_id, marker)
+        ErrorReporter::new(stage, file_id, marker, Rc::clone(&self.working_dir))
     }
 
     pub fn submit<D: Default, M: Diagnostic<D>>(&mut self, mut reporter: ErrorReporter<D, M>) {
@@ -213,7 +213,7 @@ impl ErrorReporting {
         let mut files: SimpleFiles<_, &str> = SimpleFiles::new();
 
         for (source, path) in self.files.iter() {
-            files.add(path.strip_prefix(&self.working_dir).map(|path| path.to_string_lossy())
+            files.add(path.strip_prefix(&**self.working_dir).map(|path| path.to_string_lossy())
                 .unwrap_or_else(|_| path.to_string_lossy()), source);
         }
 
@@ -261,17 +261,17 @@ pub struct ErrorReporter<D, M> {
     stage: CompileStage,
     pub custom_data: D,
     diagnostics: Vec<SubmittedDiagnosticData<M>>,
-    current_file_id: FileId,
+    current_file_id: FileId, working_dir: Rc<PathBuf>,
     panic_mode: bool,
 }
 
 impl<D, M> ErrorReporter<D, M> {
-    fn new(stage: CompileStage, file_id: FileId, marker: D) -> Self {
+    fn new(stage: CompileStage, file_id: FileId, marker: D, working_dir: Rc<PathBuf>) -> Self {
         ErrorReporter {
             stage,
             custom_data: marker,
             diagnostics: Vec::new(),
-            current_file_id: file_id,
+            current_file_id: file_id, working_dir,
             panic_mode: false,
         }
     }
@@ -300,6 +300,8 @@ impl<D, M> ErrorReporter<D, M> {
     pub fn set_current_file_id(&mut self, file_id: FileId) {
         self.current_file_id = file_id;
     }
+
+    pub fn working_dir(&self) -> &Rc<PathBuf> { &self.working_dir }
 
     pub fn panic_mode(&self) -> bool {
         self.panic_mode

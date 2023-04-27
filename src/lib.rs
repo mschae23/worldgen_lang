@@ -32,10 +32,10 @@ pub fn run() -> Result<(), std::io::Error> {
     let working_dir = std::env::current_dir()?.canonicalize()?;
     let mut reporting = ErrorReporting::new(Rc::clone(&config), working_dir);
 
-    let input = Rc::new(config.input.clone());
+    let input = Rc::new(config.input.canonicalize()?);
     let source = std::fs::read_to_string(input.as_path())?;
     let _pipeline = CompileState::new(Rc::clone(&config), &source,
-        Rc::clone(&input),
+        vec![(Rc::clone(&input), None)],
         reporting.get_file_id(Rc::clone(&input), std::fs::read_to_string(&*input)?)?)
         .tokenize()
         .parse(&mut reporting)

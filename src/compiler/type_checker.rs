@@ -36,6 +36,14 @@ pub enum TypeError<'source> {
         message: Option<Cow<'source, str>>,
         additional_annotation: Option<(SpanWithFile, Option<Cow<'source, str>>)>,
     },
+    RepeatedInclude {
+        path: String,
+        previous_span: Option<SpanWithFile>,
+    },
+    Io {
+        message: &'source str,
+        io_message: String,
+    },
     Unimplemented(&'source str),
 }
 
@@ -45,6 +53,8 @@ impl<'source> Diagnostic<MessageMarker> for TypeError<'source> {
             Self::ImplementsNotClass { .. } => "type/implements_not_class",
             Self::ClassMissingDef { .. } => "type/class_missing_def",
             Self::MismatchedTypes { .. } => "type/mismatched_types",
+            Self::RepeatedInclude { .. } => "type/repeated_include",
+            Self::Io { .. } => "type/io",
             Self::Unimplemented(_) => "type/unimplemented",
         }
     }
@@ -61,6 +71,8 @@ impl<'source> Diagnostic<MessageMarker> for TypeError<'source> {
             Self::ImplementsNotClass { name, actual_kind, .. } => format!("expected class or interface, but `{}` is {}", name, actual_kind),
             Self::ClassMissingDef { clause, name } => format!("missing {} definition for class `{}`", clause, name),
             Self::MismatchedTypes { expected, found, .. } => format!("mismatched types: expected {}, found {}", expected, found),
+            Self::RepeatedInclude { path, .. } => format!("tried to include file twice: {}", path),
+            Self::Io { message, io_message } => format!("{} (IO error: \"{}\")", message, io_message),
             Self::Unimplemented(msg) => format!("not implemented yet: {}", msg),
         }
     }
@@ -70,6 +82,8 @@ impl<'source> Diagnostic<MessageMarker> for TypeError<'source> {
             Self::ImplementsNotClass { name, .. } => Some(format!("`{}` referenced here", name)),
             Self::ClassMissingDef { name, .. } => Some(format!("`{}` is declared here", name)),
             Self::MismatchedTypes { message, .. } => message.as_ref().map(|cow| cow.clone().into_owned()),
+            Self::RepeatedInclude { .. } => Some(String::from("file included again here")),
+            Self::Io { .. } => Some(String::from("IO error occurred here")),
             Self::Unimplemented(_) => Some(String::from("unimplemented feature used here")),
         }
     }
@@ -79,6 +93,9 @@ impl<'source> Diagnostic<MessageMarker> for TypeError<'source> {
             Self::ImplementsNotClass { name, defined_at, .. } => vec![(*defined_at, Some(format!("`{}` originally defined here", name)))],
             Self::MismatchedTypes { additional_annotation, .. } => additional_annotation.as_ref().map(|&(span, ref label)| (span, label.as_ref()
                 .map(|label| label.clone().into_owned())))
+                .into_iter().collect(),
+            Self::RepeatedInclude { previous_span, .. } => previous_span.as_ref()
+                .map(|&previous_span| (previous_span, Some(String::from("file included here before"))))
                 .into_iter().collect(),
             _ => Vec::new(),
         }
@@ -109,23 +126,26 @@ enum ExprProcessVariant<'source> {
 
 pub struct TypeChecker {
     _config: Rc<Config>,
-    _path: Rc<PathBuf>, file_id: FileId,
+    pub paths: Vec<(Rc<PathBuf>, Option<SpanWithFile>)>, own_path_index: usize, file_id: FileId,
 
     types: TypeStorage, forward_decls: ForwardDeclStorage,
-    names: NameResolution,
+    pub names: NameResolution,
 }
 
 #[allow(clippy::too_many_arguments)]
 impl<'source> TypeChecker {
-    pub fn new(config: Rc<Config>, path: Rc<PathBuf>, file_id: FileId, type_storage: TypeStorage, forward_decls: ForwardDeclStorage) -> Self {
+    // path should already be canonicalized
+    pub fn new(config: Rc<Config>, paths: Vec<(Rc<PathBuf>, Option<SpanWithFile>)>, file_id: FileId, type_storage: TypeStorage, forward_decls: ForwardDeclStorage) -> Self {
+        let own_path_index = paths.len() - 1;
+
         TypeChecker {
-            _config: config, _path: path, file_id,
+            _config: config, paths, own_path_index, file_id,
             types: type_storage, forward_decls,
             names: NameResolution::new(),
         }
     }
 
-    pub fn check_types(mut self, declarations: Vec<ForwardDeclaredDecl<'source>>, reporter: &mut TypeErrorReporter<'source>) {
+    pub fn check_types(&mut self, declarations: Vec<ForwardDeclaredDecl<'source>>, reporter: &mut TypeErrorReporter<'source>) {
         println_debug!("Name resolution state:\n{:#?}\n{:#?}", &self.types, &self.forward_decls);
 
         let mut process_stack = declarations.into_iter()
@@ -330,7 +350,28 @@ impl<'source> TypeChecker {
         }
     }
 
-    fn check_include(&mut self, key_span: SpanWithFile, path: Token<'source>, process_stack: &mut Vec<DeclProcessVariant>, reporter: &mut TypeErrorReporter<'source>) {
+    fn check_include(&mut self, key_span: SpanWithFile, path_token: Token<'source>, process_stack: &mut Vec<DeclProcessVariant>, reporter: &mut TypeErrorReporter<'source>) {
+        let path = self.paths[self.own_path_index].0.parent().expect("path has no parent, even though it is definitely the path of a file").join(path_token.source()).canonicalize();
+        let path = match path {
+            Ok(path) => Rc::new(path),
+            Err(err) => {
+                self.error(path_token.span(), TypeError::Io { message: "failed to canonicalize path", io_message: format!("{}", err), }, reporter);
+                return;
+            },
+        };
+
+        if let Some((_, previous_span)) = self.paths.iter().rev().find(|(previous, _)| *previous == path) {
+            let formatted_path = path.strip_prefix(&**reporter.working_dir()).unwrap_or(&**path).to_string_lossy().into_owned();
+            self.error(path_token.span(), TypeError::RepeatedInclude { path: formatted_path, previous_span: *previous_span, }, reporter);
+
+            // Still push the path, for more useful error messages in case it is included yet another time
+            self.paths.push((path, Some(SpanWithFile::new(path_token.file_id(), path_token.span()))));
+            return;
+        }
+
+        // TODO Actually include
+
+        self.paths.push((path, Some(SpanWithFile::new(path_token.file_id(), path_token.span()))));
         self.unimplemented(key_span.span(), "check include decl", reporter);
     }
 
