@@ -1,5 +1,6 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use non_empty_vec::{ne_vec, NonEmpty};
@@ -250,10 +251,17 @@ impl Default for TypeModule {
     }
 }
 
-pub type EnvironmentId = usize;
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct EnvironmentId(usize);
 
-pub const GLOBAL_ENVIRONMENT_ID: EnvironmentId = 0;
-pub const GLOBAL_IMPORT_ENVIRONMENT_ID: EnvironmentId = 1;
+impl Debug for EnvironmentId {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+pub const GLOBAL_ENVIRONMENT_ID: EnvironmentId = EnvironmentId(0);
+pub const GLOBAL_IMPORT_ENVIRONMENT_ID: EnvironmentId = EnvironmentId(1);
 
 #[derive(Debug)]
 pub struct TypeEnvironment {
@@ -288,7 +296,7 @@ pub struct NameResolution {
 
     // Type environments always occupy 2 IDs and 2 slots in the stack:
     // a normal type environment and an import type environment
-    type_environments: NonEmpty<TypeEnvironment>, // by ID
+    type_environments: Vec<TypeEnvironment>, // by ID
     type_environment_stack: NonEmpty<EnvironmentId>,
 }
 
@@ -296,19 +304,29 @@ impl NameResolution {
     pub fn new(forward_decls: ForwardDeclStorage) -> Self {
         NameResolution {
             forward_decls,
-            type_environments: ne_vec![TypeEnvironment::new(), TypeEnvironment::new()],
+            type_environments: vec![TypeEnvironment::new(), TypeEnvironment::new()],
             type_environment_stack: NonEmpty::new(GLOBAL_ENVIRONMENT_ID),
         }
     }
 
     #[inline]
+    pub fn get_current_environment_id(&self) -> EnvironmentId {
+        *self.type_environment_stack.last()
+    }
+
+    #[inline]
+    pub fn get_import_environment_id(&self) -> EnvironmentId {
+        EnvironmentId(self.type_environment_stack.last().0 + 1)
+    }
+
+    #[inline]
     pub fn get_type_environment_by_id(&self, id: EnvironmentId) -> &TypeEnvironment {
-        &self.type_environments[id]
+        &self.type_environments[id.0]
     }
 
     #[inline]
     pub fn get_type_environment_by_id_mut(&mut self, id: EnvironmentId) -> &mut TypeEnvironment {
-        &mut self.type_environments[id]
+        &mut self.type_environments[id.0]
     }
 
     #[inline]
@@ -325,17 +343,17 @@ impl NameResolution {
     pub fn get_current_import_environment(&self) -> &TypeEnvironment {
         assert!(self.is_normal_environment(*self.type_environment_stack.last()), "An import environment is on the type environment stack");
 
-        self.get_type_environment_by_id(*self.type_environment_stack.last() + 1)
+        self.get_type_environment_by_id(self.get_import_environment_id())
     }
 
     #[inline]
     pub fn is_normal_environment(&self, id: EnvironmentId) -> bool {
-        id % 2 == 0
+        id.0 % 2 == 0
     }
 
     #[inline]
     pub fn is_import_environment(&self, id: EnvironmentId) -> bool {
-        id % 2 == 1
+        id.0 % 2 == 1
     }
 
     pub fn open_type_environment(&mut self, name: String) -> EnvironmentId {
@@ -348,8 +366,8 @@ impl NameResolution {
         let id = if let Some(existing_id) = existing_id {
             existing_id
         } else {
-            let next_id: EnvironmentId = self.type_environments.len().into();
-            assert!(self.is_normal_environment(next_id), "New type environment `{}` gets an odd ID: {}", &name, next_id);
+            let next_id: EnvironmentId = EnvironmentId(self.type_environments.len());
+            assert!(self.is_normal_environment(next_id), "New type environment `{}` gets an odd ID: {:?}", &name, next_id);
 
             self.type_environments.push(TypeEnvironment::new()); // the new type environment
             self.type_environments.push(TypeEnvironment::new()); // the new import environment
@@ -381,10 +399,17 @@ impl NameResolution {
         self.get_current_type_environment_mut().optimizations.push(decl);
     }
 
-    pub fn include(&mut self, other: NameResolution) {
-        self.forward_decls.include(other.forward_decls);
+    pub fn include(&mut self, mut other: NameResolution) {
+        let id_offset = self.type_environments.len();
 
-        println_debug!("TODO: include other names");
+        self.forward_decls.include(other.forward_decls);
+        self.type_environments.append(&mut other.type_environments);
+
+        self.merge_type_environment(self.get_import_environment_id(), EnvironmentId(GLOBAL_ENVIRONMENT_ID.0 + id_offset), id_offset);
+    }
+
+    fn merge_type_environment(&mut self, id: EnvironmentId, other_id: EnvironmentId, id_offset: usize) {
+        println_debug!("TODO: merge type environment {:?} into {:?} (offset {})", other_id, id, id_offset);
     }
 
     pub fn close_type_environment(&mut self) {

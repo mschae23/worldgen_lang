@@ -396,6 +396,8 @@ impl<'reporting, 'source> TypeChecker<'reporting> {
         let names = type_checked.names;
         println_debug!("Included name resolution: {:#?}", &names);
 
+        // TODO Check that these names don't already exist in this environment
+
         self.names.include(names);
     }
 

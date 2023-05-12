@@ -6,6 +6,7 @@ use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::compiler::lexer::Token;
 use crate::compiler::name;
 use crate::compiler::name::{TypeId, TypeStorage};
+#[allow(unused)]
 use crate::println_debug;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -234,8 +235,12 @@ impl ForwardDeclStorage {
         Err(span)
     }
 
-    pub fn include(&mut self, other: ForwardDeclStorage) {
-        println_debug!("TODO: include other forward decls");
+    pub fn include(&mut self, mut other: ForwardDeclStorage) {
+        self.declarations.append(&mut other.declarations);
+        self.declaration_spans.append(&mut other.declaration_spans);
+        self.declaration_has_duplicate.append(&mut other.declaration_has_duplicate);
+        self.top_level_module.merge(other.top_level_module);
+        self.type_to_decl_mapping.append(&mut other.type_to_decl_mapping);
     }
 
     pub fn assert_complete_type_mappings(&self) {
@@ -374,6 +379,14 @@ impl ForwardModule {
             sub_modules: HashMap::new(),
             declarations: Vec::new(),
         }
+    }
+
+    pub fn merge(&mut self, mut other: ForwardModule) {
+        for (name, sub_module) in other.sub_modules.into_iter() {
+            self.sub_modules.entry(name).or_default().merge(sub_module);
+        }
+
+        self.declarations.append(&mut other.declarations);
     }
 }
 
