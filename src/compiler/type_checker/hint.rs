@@ -13,6 +13,7 @@ impl TypeHint {
         Self::Options(NonEmpty::new(type_id))
     }
 
+    #[deprecated]
     fn one_way_can_type_convert_to(from: TypeId, to: &Self, allow_coerce: bool, _names: &NameResolution) -> bool {
         match to {
             TypeHint::Options(options) => match from {
@@ -24,6 +25,7 @@ impl TypeHint {
         }
     }
 
+    #[deprecated]
     fn one_way_can_type_convert_from(to: TypeId, from: &Self, allow_coerce: bool, _names: &NameResolution) -> bool {
         match from {
             TypeHint::Options(from_options) => match to {
@@ -36,6 +38,8 @@ impl TypeHint {
         }
     }
 
+    #[deprecated]
+    #[allow(deprecated)]
     fn one_way_can_convert_to(&self, to: &Self, allow_coerce: bool, names: &NameResolution) -> bool {
         match self {
             TypeHint::Options(from_options) => {
@@ -51,6 +55,8 @@ impl TypeHint {
         }
     }
 
+    #[deprecated]
+    #[allow(deprecated)]
     fn one_way_can_convert_from(&self, from: &Self, allow_coerce: bool, names: &NameResolution) -> bool {
         match self {
             TypeHint::Options(to_options) => {
@@ -66,11 +72,15 @@ impl TypeHint {
         }
     }
 
+    #[deprecated]
+    #[allow(deprecated)]
     pub fn can_convert_to(&self, other: &Self, allow_coerce: bool, names: &NameResolution) -> bool {
         self.one_way_can_convert_to(other, allow_coerce, names)
             || other.one_way_can_convert_from(self, allow_coerce, names)
     }
 
+    #[deprecated]
+    #[allow(deprecated)]
     pub fn can_convert_from(&self, other: &Self, allow_coerce: bool, names: &NameResolution) -> bool {
         self.one_way_can_convert_from(other, allow_coerce, names)
             || other.one_way_can_convert_to(self, allow_coerce, names)

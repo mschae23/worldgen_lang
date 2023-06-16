@@ -228,7 +228,7 @@ impl ErrorReporting {
                 let mut d = diagnostic_render::diagnostic::Diagnostic::new(match diagnostic.severity {
                     Severity::Error => diagnostic_render::diagnostic::Severity::Error,
                     Severity::Warning => diagnostic_render::diagnostic::Severity::Warning,
-                }).with_name(diagnostic.name).with_message(&diagnostic.message);
+                }).with_name(diagnostic.name).with_message(&diagnostic.message).with_suppressed_count(diagnostic.suppressed_messages);
 
                 let mut primary_annotation = diagnostic_render::diagnostic::Annotation::new(AnnotationStyle::Primary, diagnostic.file_id as usize,
                     diagnostic.span.start as usize..diagnostic.span.end as usize);

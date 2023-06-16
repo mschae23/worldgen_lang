@@ -293,16 +293,18 @@ impl<'reporting, 'source> TypeChecker<'reporting> {
                 let typed_condition = condition.map(|(condition, condition_span)| {
                     let typed = self.check_expr(condition, TypeHint::new(name::BOOLEAN_TYPE_ID), reporter);
 
-                    if !TypeHint::new(name::BOOLEAN_TYPE_ID).can_convert_from(&TypeHint::new(typed.type_id()), true, &self.names) {
-                        self.error(condition_span, TypeError::MismatchedTypes {
-                            expected: Cow::Borrowed("boolean"),
-                            found: Cow::Owned(self.names.type_name(typed.type_id()).to_owned()),
-                            message: Some(Cow::Borrowed("type alias condition must be of type boolean")),
-                            additional_annotation: Some((key_span, None)),
-                        }, reporter);
+                    match typed.convert_to(&TypeHint::new(name::BOOLEAN_TYPE_ID), &self.names) {
+                        Ok(typed) => typed,
+                        Err(typed) => {
+                            self.error(condition_span, TypeError::MismatchedTypes {
+                                expected: Cow::Borrowed("boolean"),
+                                found: Cow::Owned(self.names.type_name(typed.type_id()).to_owned()),
+                                message: Some(Cow::Borrowed("type alias condition must be of type boolean")),
+                                additional_annotation: Some((key_span, None)),
+                            }, reporter);
+                            typed
+                        },
                     }
-
-                    typed
                 });
 
                 self.names.insert_declaration(name.source().to_owned(), TypedDecl::TypeAlias {
@@ -329,22 +331,21 @@ impl<'reporting, 'source> TypeChecker<'reporting> {
                         name: OwnedToken::from_token(&parameters[i].name), parameter_type: *id }).collect();
                     let typed_expr = self.check_template_expr(expr, TypeHint::new(return_type), reporter);
 
-                    if !TypeHint::new(typed_expr.type_id()).can_convert_to(&TypeHint::new(return_type), true, &self.names) {
-                        self.error(expr_span, TypeError::MismatchedTypes {
+                    match typed_expr.convert_to(&TypeHint::new(return_type), &self.names) {
+                        Ok(typed_expr) => self.names.insert_template_declaration(TypedTemplateDecl {
+                            name: OwnedToken::from_token(&name),
+                            parameters: typed_parameters,
+                            return_type,
+                            expr: typed_expr,
+                            parameter_span,
+                        }),
+                        Err(typed_expr) => self.error(expr_span, TypeError::MismatchedTypes {
                             expected: Cow::Owned(self.names.type_name(return_type).to_owned()),
                             found: Cow::Owned(self.names.type_name(typed_expr.type_id()).to_owned()),
                             message: Some(Cow::Borrowed("template expression must have the template's return type")),
                             additional_annotation: Some((SpanWithFile::new(self.file_id, return_type_span), Some(Cow::Borrowed("return type defined here")))),
-                        }, reporter);
+                        }, reporter),
                     }
-
-                    self.names.insert_template_declaration(TypedTemplateDecl {
-                        name: OwnedToken::from_token(&name),
-                        parameters: typed_parameters,
-                        return_type,
-                        expr: typed_expr,
-                        parameter_span,
-                    });
                 },
                 _ => panic!("Internal compiler error: forward decl for `{}` is not a template", name.source()),
             },
@@ -401,10 +402,12 @@ impl<'reporting, 'source> TypeChecker<'reporting> {
         self.names.include(names);
     }
 
+    #[allow(unused_variables)]
     fn check_import(&mut self, key_span: SpanWithFile, path: NonEmpty<Token<'source>>, selector: Option<NonEmpty<Token<'source>>>, span: Span, reporter: &mut TypeErrorReporter<'source>) {
         self.unimplemented(key_span.span(), "check import decl", reporter);
     }
 
+    #[allow(unused_variables)]
     fn check_variable(&mut self, key_span: SpanWithFile, decl_id: DeclId, kind: VariableKind, name: Token<'source>, expr: Expr<'source>, span: Span, reporter: &mut TypeErrorReporter<'source>) {
         self.unimplemented(key_span.span(), "check variable decl", reporter);
     }
@@ -429,18 +432,22 @@ impl<'reporting, 'source> TypeChecker<'reporting> {
                 let typed_then = Box::new(self.check_template_expr(*then, type_hint.clone(), reporter));
                 let typed_otherwise = Box::new(self.check_template_expr(*otherwise, type_hint, reporter));
 
-                if !TypeHint::new(name::BOOLEAN_TYPE_ID).can_convert_from(&TypeHint::new(typed_condition.type_id()), true, &self.names) {
-                    self.error(condition_span, TypeError::MismatchedTypes {
-                        expected: Cow::Borrowed("boolean"),
-                        found: Cow::Owned(self.names.type_name(typed_condition.type_id()).to_owned()),
-                        message: Some(Cow::Borrowed("condition of `if` expression needs to be of type boolean")),
-                        additional_annotation: Some((SpanWithFile::new(self.file_id, key_span), None)),
-                    }, reporter);
-                }
+                let typed_condition = match typed_condition.convert_to(&TypeHint::new(name::BOOLEAN_TYPE_ID), &self.names) {
+                    Ok(typed_condition) => typed_condition,
+                    Err(typed_condition) => {
+                        self.error(condition_span, TypeError::MismatchedTypes {
+                            expected: Cow::Borrowed("boolean"),
+                            found: Cow::Owned(self.names.type_name(typed_condition.type_id()).to_owned()),
+                            message: Some(Cow::Borrowed("condition of `if` expression needs to be of type boolean")),
+                            additional_annotation: Some((SpanWithFile::new(self.file_id, key_span), None)),
+                        }, reporter);
+                        typed_condition
+                    },
+                };
 
                 TypedTemplateExpr::If {
                     key_span: SpanWithFile::new(self.file_id, key_span),
-                    condition: TypedExpr::Error,
+                    condition: typed_condition,
                     then: typed_then,
                     otherwise: typed_otherwise,
                     condition_span,
@@ -528,17 +535,22 @@ impl<'reporting, 'source> TypeChecker<'reporting> {
                         (output_stack.pop().expect("Internal compiler error: empty output stack"), merge_expr_span))
                         .map(|(expr, span)| (Box::new(expr), SpanWithFile::new(self.file_id, span)));
 
-                    if let Some((typed_merge_expr, merge_expr_span)) = &merge_expr {
-                        // TODO insert "convert type" AST node
-                        if !TypeHint::new(name::OBJECT_TYPE_ID).can_convert_from(&TypeHint::new(typed_merge_expr.type_id()), true, &self.names) {
-                            self.error(merge_expr_span.span(), TypeError::MismatchedTypes {
-                                expected: Cow::Borrowed("object"),
-                                found: Cow::Owned(self.names.type_name(typed_merge_expr.type_id()).to_owned()),
-                                message: Some(Cow::Borrowed("merge expression needs to be of type object")),
-                                additional_annotation: Some((SpanWithFile::new(self.file_id, span), None)),
-                            }, reporter);
-                        }
-                    }
+                    let merge_expr = if let Some((typed_merge_expr, merge_expr_span)) = merge_expr {
+                        let typed_merge_expr = match typed_merge_expr.convert_to(&TypeHint::new(name::OBJECT_TYPE_ID), &self.names) {
+                            Ok(typed_merge_expr) => typed_merge_expr,
+                            Err(typed_merge_expr) => {
+                                self.error(merge_expr_span.span(), TypeError::MismatchedTypes {
+                                    expected: Cow::Borrowed("object"),
+                                    found: Cow::Owned(self.names.type_name(typed_merge_expr.type_id()).to_owned()),
+                                    message: Some(Cow::Borrowed("merge expression needs to be of type object")),
+                                    additional_annotation: Some((SpanWithFile::new(self.file_id, span), None)),
+                                }, reporter);
+                                typed_merge_expr
+                            },
+                        };
+
+                        Some((Box::new(typed_merge_expr), merge_expr_span))
+                    } else { None };
 
                     let fields_len = fields.len();
 

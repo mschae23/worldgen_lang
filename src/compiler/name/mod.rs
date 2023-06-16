@@ -53,6 +53,12 @@ pub const TYPE_TYPE_ID: TypeId = TypeId(6);
 pub const ERROR_TYPE_ID: TypeId = TypeId(7);
 pub const PRIMITIVE_TYPE_COUNT: usize = 8;
 
+pub const CONVERTIBLE_TO_STRING: [TypeId; 3] = [
+    INT_TYPE_ID,
+    FLOAT_TYPE_ID,
+    BOOLEAN_TYPE_ID,
+];
+
 #[derive(Debug)]
 pub struct TypeStorage {
     type_id_offset: usize,
