@@ -104,7 +104,7 @@ impl<'source> ForwardDeclaredState<'source> {
 
         let mut type_checker = TypeChecker::new(Rc::clone(&self.config),
             self.paths, self.file_id, self.type_id_offset, self.decl_id_offset,
-            self.type_storage.get_type_count(), self.forward_declaration_storage, reporting);
+            self.type_storage, self.forward_declaration_storage, reporting);
         type_checker.check_types(self.declarations, &mut reporter);
 
         let paths = type_checker.paths;

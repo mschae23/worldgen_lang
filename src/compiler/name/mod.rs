@@ -2,7 +2,6 @@ use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
 use non_empty_vec::{ne_vec, NonEmpty};
 use crate::compiler::ast::forward::ForwardDeclStorage;
 use crate::compiler::ast::simple::{PrimitiveTypeKind, TypePart, TypeReferencePart};
@@ -64,7 +63,7 @@ pub struct TypeStorage {
     type_id_offset: usize,
     types: Vec<SimpleTypeInfo>,
     top_level_module: TypeModule,
-    type_path_lookup: Vec<Option<PathBuf>>,
+    type_path_lookup: Vec<Option<NonEmpty<String>>>,
     type_span_lookup: Vec<Option<SpanWithFile>>,
 }
 
@@ -103,12 +102,12 @@ impl TypeStorage {
         self.types.len()
     }
 
-    pub fn get_path(&self, type_id: TypeId) -> Option<&Path> {
+    pub fn get_path(&self, type_id: TypeId) -> Option<&NonEmpty<String>> {
         if type_id.0 < PRIMITIVE_TYPE_COUNT {
             None
         } else {
             use std::borrow::Borrow;
-            self.type_path_lookup.get(type_id.0 - PRIMITIVE_TYPE_COUNT - self.type_id_offset).and_then(|path| path.as_ref().map(PathBuf::borrow))
+            self.type_path_lookup.get(type_id.0 - PRIMITIVE_TYPE_COUNT - self.type_id_offset).and_then(|path| path.as_ref().map(NonEmpty::borrow))
         }
     }
 
@@ -229,7 +228,8 @@ impl TypeStorage {
         };
 
         self.types.push(type_info);
-        self.type_path_lookup.push(Some(path.iter().collect()));
+        // SAFETY: path was asserted to not be empty
+        self.type_path_lookup.push(Some(unsafe { NonEmpty::new_unchecked(path.iter().copied().map(str::to_owned).collect()) }));
         self.type_span_lookup.push(Some(SpanWithFile::new(file_id, span)));
 
         Ok(id)
@@ -298,6 +298,7 @@ impl Default for TypeEnvironment {
 
 #[derive(Debug)]
 pub struct NameResolution {
+    pub types: TypeStorage,
     pub forward_decls: ForwardDeclStorage,
 
     // Type environments always occupy 2 IDs and 2 slots in the stack:
@@ -307,9 +308,9 @@ pub struct NameResolution {
 }
 
 impl NameResolution {
-    pub fn new(forward_decls: ForwardDeclStorage) -> Self {
+    pub fn new(types: TypeStorage, forward_decls: ForwardDeclStorage) -> Self {
         NameResolution {
-            forward_decls,
+            types, forward_decls,
             type_environments: vec![TypeEnvironment::new(), TypeEnvironment::new()],
             type_environment_stack: NonEmpty::new(GLOBAL_ENVIRONMENT_ID),
         }
@@ -436,7 +437,7 @@ impl NameResolution {
             ARRAY_TYPE_ID => "array",
             TYPE_TYPE_ID => "type",
             ERROR_TYPE_ID => "error",
-            _ => "unknown",
+            _ => self.types.get_path(type_id).map_or("unknown", |path| path.last()),
         }
     }
 }

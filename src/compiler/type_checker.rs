@@ -9,7 +9,7 @@ use crate::compiler::error::{Diagnostic, DiagnosticContext, ErrorReporter, Error
 use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::compiler::lexer::Token;
 use crate::compiler::name;
-use crate::compiler::name::{NameResolution, TypeId};
+use crate::compiler::name::{NameResolution, TypeId, TypeStorage};
 use crate::compiler::pipeline::CompileState;
 use crate::compiler::type_checker::hint::TypeHint;
 use crate::Config;
@@ -137,14 +137,14 @@ pub struct TypeChecker<'reporting> {
 #[allow(clippy::too_many_arguments)]
 impl<'reporting, 'source> TypeChecker<'reporting> {
     // path should already be canonicalized
-    pub fn new(config: Rc<Config>, paths: Vec<(Rc<PathBuf>, Option<SpanWithFile>)>, file_id: FileId, type_id_offset: usize, decl_id_offset: usize, type_count: usize, forward_decls: ForwardDeclStorage, reporting: &'reporting mut ErrorReporting) -> Self {
+    pub fn new(config: Rc<Config>, paths: Vec<(Rc<PathBuf>, Option<SpanWithFile>)>, file_id: FileId, type_id_offset: usize, decl_id_offset: usize, types: TypeStorage, forward_decls: ForwardDeclStorage, reporting: &'reporting mut ErrorReporting) -> Self {
         let own_path_index = paths.len() - 1;
 
         TypeChecker {
             config, reporting, paths, own_path_index, file_id,
             type_id_offset, decl_id_offset,
-            type_count,
-            names: NameResolution::new(forward_decls),
+            type_count: types.get_type_count(),
+            names: NameResolution::new(types, forward_decls),
         }
     }
 
