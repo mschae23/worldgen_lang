@@ -299,6 +299,10 @@ impl TypedExpr {
 
         // TODO lookup type conversion templates
 
+        if from == name::ERROR_TYPE_ID {
+            return Ok(TypedExpr::Error); // Error should've already been reported
+        }
+
         Err(self)
     }
 

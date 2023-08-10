@@ -205,7 +205,7 @@ impl ForwardDeclarer {
 
                         let duplicate = if let Some(previous_id) = storage.find_decl_id_for_duplicate(&path, &[], |name2, decl2| if let ForwardDecl::Template(template_decl) = decl2 {
                             template_decl.parameters == parameter_types
-                        } else { false } && name.source() == name2) {
+                        } else { true } && name.source() == name2) {
                             storage.mark_duplicate(previous_id);
                             let previous_span = storage.get_span_by_id(previous_id);
                             self.error(name.span(), DeclError::DeclAlreadyDeclared(format!("`{}`", name.source()), Some(previous_span)), reporter);

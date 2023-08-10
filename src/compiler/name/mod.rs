@@ -9,6 +9,7 @@ use crate::compiler::ast::typed::{TypedConversionDecl, TypedDecl, TypedOptimizeD
 use crate::compiler::error::FileId;
 use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::compiler::lexer::TokenType;
+use crate::compiler::type_checker::TypeErrorReporter;
 use crate::println_debug;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -406,10 +407,13 @@ impl NameResolution {
         self.get_current_type_environment_mut().optimizations.push(decl);
     }
 
-    pub fn include(&mut self, mut other: NameResolution) {
+    pub fn include(&mut self, mut other: NameResolution, reporter: &mut TypeErrorReporter<'_>) {
         let id_offset = self.type_environments.len();
 
-        self.forward_decls.include(other.forward_decls);
+        // TODO Include prefix from current module.
+        //      It always includes into the global environment right now, even if
+        //      the include decl is inside a module (get path from current environment stack)
+        self.forward_decls.include(other.forward_decls, reporter);
         self.type_environments.append(&mut other.type_environments);
 
         self.merge_type_environment(self.get_import_environment_id(), EnvironmentId(GLOBAL_ENVIRONMENT_ID.0 + id_offset), id_offset);

@@ -284,17 +284,21 @@ impl<D, M> ErrorReporter<D, M> {
         &mut self.custom_data
     }
 
-    pub fn report(&mut self, span: Span, message: M, panic: bool) { // panic is unrelated to a Rust "panic!"
+    pub fn report_with_file(&mut self, span: SpanWithFile, message: M, panic: bool) { // panic is unrelated to a Rust "panic!"
         if self.panic_mode {
             self.diagnostics.last_mut().expect("Error reporter is in panic mode, but there are no errors")
-                .suppressed_messages.push(SubmittedDiagnosticData::new(self.current_file_id, span, message));
+                .suppressed_messages.push(SubmittedDiagnosticData::new(span.file_id, span.span, message));
         } else {
-            self.diagnostics.push(SubmittedDiagnosticData::new(self.current_file_id, span, message));
+            self.diagnostics.push(SubmittedDiagnosticData::new(span.file_id, span.span, message));
 
             if panic {
                 self.panic_mode = true;
             }
         }
+    }
+
+    pub fn report(&mut self, span: Span, message: M, panic: bool) { // panic is unrelated to a Rust "panic!"
+        self.report_with_file(SpanWithFile::new(self.current_file_id, span), message, panic)
     }
 
     pub fn set_current_file_id(&mut self, file_id: FileId) {

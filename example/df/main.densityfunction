@@ -33,6 +33,9 @@ module df {
     }
 }
 
+// TODO Investigate error when using: `class awesome(): df::constant(5);`
+type awesome = int;
+
 module overworld {
     import df::*;
 

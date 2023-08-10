@@ -41,6 +41,7 @@ pub enum TypeError<'source> {
         path: String,
         previous_span: Option<SpanWithFile>,
     },
+    DeclAlreadyDeclared(String, Option<SpanWithFile>), // the string has to contain the `` part if it's a name (Same error as in ForwardDeclarer)
     Io {
         message: &'source str,
         io_message: String,
@@ -55,6 +56,7 @@ impl<'source> Diagnostic<MessageMarker> for TypeError<'source> {
             Self::ClassMissingDef { .. } => "type/class_missing_def",
             Self::MismatchedTypes { .. } => "type/mismatched_types",
             Self::RepeatedInclude { .. } => "type/repeated_include",
+            Self::DeclAlreadyDeclared(_, _) => "type/already_declared_decl",
             Self::Io { .. } => "type/io",
             Self::Unimplemented(_) => "type/unimplemented",
         }
@@ -73,6 +75,7 @@ impl<'source> Diagnostic<MessageMarker> for TypeError<'source> {
             Self::ClassMissingDef { clause, name } => format!("missing {} definition for class `{}`", clause, name),
             Self::MismatchedTypes { expected, found, .. } => format!("mismatched types: expected {}, found {}", expected, found),
             Self::RepeatedInclude { path, .. } => format!("tried to include file twice: {}", path),
+            Self::DeclAlreadyDeclared(name, _) => format!("{} was already declared", name),
             Self::Io { message, io_message } => format!("{} (IO error: \"{}\")", message, io_message),
             Self::Unimplemented(msg) => format!("not implemented yet: {}", msg),
         }
@@ -84,6 +87,7 @@ impl<'source> Diagnostic<MessageMarker> for TypeError<'source> {
             Self::ClassMissingDef { name, .. } => Some(format!("`{}` is declared here", name)),
             Self::MismatchedTypes { message, .. } => message.as_ref().map(|cow| cow.clone().into_owned()),
             Self::RepeatedInclude { .. } => Some(String::from("file included again here")),
+            Self::DeclAlreadyDeclared(name, _) => Some(format!("{} declared again here", name)),
             Self::Io { .. } => Some(String::from("IO error occurred here")),
             Self::Unimplemented(_) => Some(String::from("unimplemented feature used here")),
         }
@@ -98,6 +102,9 @@ impl<'source> Diagnostic<MessageMarker> for TypeError<'source> {
             Self::RepeatedInclude { previous_span, .. } => previous_span.as_ref()
                 .map(|&previous_span| (previous_span, Some(String::from("file included here before"))))
                 .into_iter().collect(),
+            Self::DeclAlreadyDeclared(_, first) => if let Some(&span) = first.as_ref() {
+                vec![(span, Some(String::from("first declared here")))]
+            } else { vec![] },
             _ => Vec::new(),
         }
     }
@@ -149,7 +156,7 @@ impl<'reporting, 'source> TypeChecker<'reporting> {
     }
 
     pub fn check_types(&mut self, declarations: Vec<ForwardDeclaredDecl<'source>>, reporter: &mut TypeErrorReporter<'source>) {
-        println_debug!("Name resolution state:{:#?}", &self.names.forward_decls);
+        println_debug!("Name resolution state: {:#?}", &self.names.forward_decls);
 
         let mut process_stack = declarations.into_iter()
             .map(DeclProcessVariant::Decl).rev().collect::<Vec<_>>();
@@ -211,7 +218,7 @@ impl<'reporting, 'source> TypeChecker<'reporting> {
                             _ => {
                                 self.error(implements.span, TypeError::ImplementsNotClass { name: implements.name.0.last().source(),
                                     actual_kind: referenced_decl.kind_with_indefinite_article(),
-                                    defined_at: referenced_decl.span(),
+                                    defined_at: referenced_decl.name_span(),
                                 }, reporter);
                                 None
                             }
@@ -399,7 +406,7 @@ impl<'reporting, 'source> TypeChecker<'reporting> {
 
         // TODO Check that these names don't already exist in this environment
 
-        self.names.include(names);
+        self.names.include(names, reporter);
     }
 
     #[allow(unused_variables)]

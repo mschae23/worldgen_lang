@@ -1,11 +1,14 @@
 use std::collections::HashMap;
+
 use non_empty_vec::{ne_vec, NonEmpty};
+
 use crate::compiler::ast::simple::{ClassReprPart, Expr, TemplateExpr, TemplateKind, TypeReferencePart, VariableKind};
 use crate::compiler::error::FileId;
 use crate::compiler::error::span::{Span, SpanWithFile};
 use crate::compiler::lexer::Token;
 use crate::compiler::name;
 use crate::compiler::name::{TypeId, TypeStorage};
+use crate::compiler::type_checker::{TypeError, TypeErrorReporter};
 #[allow(unused)]
 use crate::println_debug;
 
@@ -235,11 +238,11 @@ impl ForwardDeclStorage {
         Err(span)
     }
 
-    pub fn include(&mut self, mut other: ForwardDeclStorage) {
+    pub fn include(&mut self, mut other: ForwardDeclStorage, reporter: &mut TypeErrorReporter<'_>) {
         self.declarations.append(&mut other.declarations);
         self.declaration_spans.append(&mut other.declaration_spans);
         self.declaration_has_duplicate.append(&mut other.declaration_has_duplicate);
-        self.top_level_module.merge(other.top_level_module);
+        self.top_level_module.merge(other.top_level_module, &self.declarations, &self.declaration_spans, &mut self.declaration_has_duplicate, self.decl_id_offset, reporter);
         self.type_to_decl_mapping.append(&mut other.type_to_decl_mapping);
     }
 
@@ -355,7 +358,7 @@ impl ForwardDecl {
         }
     }
 
-    pub fn span(&self) -> SpanWithFile {
+    pub fn name_span(&self) -> SpanWithFile {
         match self {
             ForwardDecl::Class(decl) => decl.name_span,
             ForwardDecl::TypeAlias(decl) => decl.name_span,
@@ -381,9 +384,27 @@ impl ForwardModule {
         }
     }
 
-    pub fn merge(&mut self, mut other: ForwardModule) {
+    pub fn merge(&mut self, mut other: ForwardModule, declarations: &[ForwardDecl], declaration_spans: &[SpanWithFile], declaration_has_duplicate: &mut [bool], decl_id_offset: usize, reporter: &mut TypeErrorReporter<'_>) {
         for (name, sub_module) in other.sub_modules.into_iter() {
-            self.sub_modules.entry(name).or_default().merge(sub_module);
+            self.sub_modules.entry(name).or_default().merge(sub_module, declarations, declaration_spans, declaration_has_duplicate, decl_id_offset, reporter);
+        }
+
+        for (name, decl_id) in other.declarations.iter() {
+            match &declarations[decl_id.0 - decl_id_offset] {
+                ForwardDecl::Template(decl) => if let Some((_, previous_id)) = self.declarations.iter().find(|(name2, decl2)| if let ForwardDecl::Template(template_decl) = &declarations[decl2.0 - decl_id_offset] {
+                    template_decl.parameters == decl.parameters
+                } else { true } && name == name2) {
+                    declaration_has_duplicate[decl_id.0 - decl_id_offset] = true;
+                    let previous_span = declaration_spans[previous_id.0 - decl_id_offset];
+                    // TODO Use span pointing to the actual part of the include statement pointing to this decl
+                    reporter.report_with_file(decl.name_span, TypeError::DeclAlreadyDeclared(format!("`{}`", name), Some(previous_span)), false);
+                },
+                decl => if let Some((_, previous_id)) = self.declarations.iter().find(|(name2, decl2)| !matches!(&declarations[decl2.0 - decl_id_offset], ForwardDecl::Template(_)) && name == name2) {
+                    declaration_has_duplicate[decl_id.0 - decl_id_offset] = true;
+                    let previous_span = declaration_spans[previous_id.0 - decl_id_offset];
+                    reporter.report_with_file(decl.name_span(), TypeError::DeclAlreadyDeclared(format!("`{}`", name), Some(previous_span)), false);
+                },
+            };
         }
 
         self.declarations.append(&mut other.declarations);
